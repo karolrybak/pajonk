@@ -10,7 +10,7 @@ export class WebPhysics {
     ready: boolean = false;
     
     particles = new Float32Array(MAX_PARTICLES * 8);
-    distConstraints = new Float32Array(MAX_CONSTRAINTS * 4); // Use f32 for everything to be safe
+    distConstraints = new Float32Array(MAX_CONSTRAINTS * 4);
 
     numParticles = 0;
     numDistConstraints = 0;
@@ -20,9 +20,13 @@ export class WebPhysics {
     device: GPUDevice | null = null;
     particleBuffer: GPUBuffer | null = null;
     distConstraintBuffer: GPUBuffer | null = null;
-    paramsBuffer: GPUBuffer | null = null;
+    
+    paramsBuffer0: GPUBuffer | null = null;
+    paramsBuffer1: GPUBuffer | null = null;
+    
     stagingBuffer: GPUBuffer | null = null;
-    bindGroup: GPUBindGroup | null = null;
+    bindGroup0: GPUBindGroup | null = null;
+    bindGroup1: GPUBindGroup | null = null;
 
     pipelines: Record<string, GPUComputePipeline> = {};
     isReadingBack = false;
@@ -51,10 +55,9 @@ export class WebPhysics {
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
 
-        this.paramsBuffer = device.createBuffer({
-            size: 64,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
+        const paramsSize = 64;
+        this.paramsBuffer0 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.paramsBuffer1 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
         this.stagingBuffer = device.createBuffer({
             size: this.particles.byteLength,
@@ -69,12 +72,21 @@ export class WebPhysics {
             ]
         });
 
-        this.bindGroup = device.createBindGroup({
+        this.bindGroup0 = device.createBindGroup({
             layout: bgl,
             entries: [
                 { binding: 0, resource: { buffer: this.particleBuffer } },
                 { binding: 1, resource: { buffer: this.distConstraintBuffer } },
-                { binding: 2, resource: { buffer: this.paramsBuffer } }
+                { binding: 2, resource: { buffer: this.paramsBuffer0 } }
+            ]
+        });
+
+        this.bindGroup1 = device.createBindGroup({
+            layout: bgl,
+            entries: [
+                { binding: 0, resource: { buffer: this.particleBuffer } },
+                { binding: 1, resource: { buffer: this.distConstraintBuffer } },
+                { binding: 2, resource: { buffer: this.paramsBuffer1 } }
             ]
         });
 
@@ -89,15 +101,14 @@ export class WebPhysics {
     }
 
     createRope(startPos: THREE.Vector2): any {
-        const segments = 80;
+        const segments = 100;
         const indices: number[] = [];
         const constraintIndices: number[] = [];
-        const restLen = 0.04;
+        const restLen = 0.05;
 
         for (let i = 0; i < segments; i++) {
             const idx = this.numParticles++;
             indices.push(idx);
-            // Linear layout prevents division by zero or overlapping nodes
             const initialPos = startPos.clone().add(new THREE.Vector2(0, -i * restLen));
             const invMass = (i === 0 || i === segments - 1) ? 0.0 : 1.0;
             this.setParticle(idx, initialPos, invMass);
@@ -106,7 +117,7 @@ export class WebPhysics {
         for (let i = 0; i < segments - 1; i++) {
             const cIdx = this.numDistConstraints++;
             constraintIndices.push(cIdx);
-            this.setDistConstraint(cIdx, indices[i]!, indices[i+1]!, restLen, 0.000001);
+            this.setDistConstraint(cIdx, indices[i]!, indices[i+1]!, restLen, 0.0001);
         }
 
         const geo = new THREE.BufferGeometry();
@@ -115,7 +126,7 @@ export class WebPhysics {
         const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
         this.scene.add(line);
 
-        const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffaa00, size: 0.12 }));
+        const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffaa00, size: 0.15, sizeAttenuation: true }));
         this.scene.add(points);
 
         const rope = { indices, constraintIndices, mesh: line, pointsMesh: points, segments, segmentLength: restLen };
@@ -131,13 +142,15 @@ export class WebPhysics {
         this.particles[off + 1] = pos.y;
         this.particles[off + 2] = pos.x; 
         this.particles[off + 3] = pos.y;
+        this.particles[off + 4] = 0;
+        this.particles[off + 5] = 0;
         this.particles[off + 6] = invMass;
-        this.particles[off + 7] = 0.04;
+        this.particles[off + 7] = 0.05;
     }
 
     setDistConstraint(i: number, a: number, b: number, len: number, compliance: number): void {
         const off = i * 4;
-        const uv = new Uint32Array(this.distConstraints.buffer, this.distConstraints.byteOffset, this.distConstraints.length);
+        const uv = new Uint32Array(this.distConstraints.buffer);
         uv[off] = a;
         uv[off + 1] = b;
         this.distConstraints[off + 2] = len;
@@ -151,57 +164,59 @@ export class WebPhysics {
     }
 
     update(mousePos: THREE.Vector2): void {
-        if (!this.ready || !this.device || this.isReadingBack) return;
+        if (!this.ready || !this.device || !this.bindGroup0 || this.isReadingBack) return;
 
-        const substeps = 40;
+        const substeps = 12;
+        const constraintIters = 6;
         const dt = 1.0 / 60.0;
 
-        // Buffer layout matching WGSL struct Params
-        const paramsBuffer = new ArrayBuffer(64);
-        const f32 = new Float32Array(paramsBuffer);
-        const u32 = new Uint32Array(paramsBuffer);
-        const i32 = new Int32Array(paramsBuffer);
+        const fillParams = (phase: number) => {
+            const paramsBuffer = new ArrayBuffer(64);
+            const f32 = new Float32Array(paramsBuffer);
+            const u32 = new Uint32Array(paramsBuffer);
+            const i32 = new Int32Array(paramsBuffer);
+            f32[0] = dt; 
+            f32[1] = -15.0; 
+            u32[2] = this.numParticles;
+            u32[3] = this.numDistConstraints;
+            u32[4] = substeps;
+            u32[5] = phase;
+            f32[6] = mousePos.x;
+            f32[7] = mousePos.y;
+            i32[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1;
+            return paramsBuffer;
+        };
 
-        f32[0] = dt; 
-        f32[1] = -15.0; 
-        u32[2] = this.numParticles;
-        u32[3] = this.numDistConstraints;
-        u32[4] = substeps;
-        // f32[5] = phase will be set in loop
-        f32[6] = mousePos.x;
-        f32[7] = mousePos.y;
-        i32[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1;
+        this.device.queue.writeBuffer(this.paramsBuffer0!, 0, fillParams(0));
+        this.device.queue.writeBuffer(this.paramsBuffer1!, 0, fillParams(1));
 
         const encoder = this.device.createCommandEncoder();
         for (let s = 0; s < substeps; s++) {
-            // Update phase (0 or 1) per constraint solver dispatch
-            u32[5] = 0; // Phase 0
-            this.device.queue.writeBuffer(this.paramsBuffer!, 0, paramsBuffer);
-            
-            const pass = encoder.beginComputePass();
-            pass.setBindGroup(0, this.bindGroup!);
-            
-            // 1. Integration (only once per substep)
-            pass.setPipeline(this.pipelines.integrate!);
-            pass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
-            
-            // 2. Constraint Solve (Phase 0 - Even)
-            pass.setPipeline(this.pipelines.solveDistance!);
-            pass.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
-            pass.end();
+            const intPass = encoder.beginComputePass();
+            intPass.setBindGroup(0, this.bindGroup0);
+            intPass.setPipeline(this.pipelines.integrate!);
+            intPass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
+            intPass.end();
 
-            // 3. Constraint Solve (Phase 1 - Odd)
-            u32[5] = 1; 
-            this.device.queue.writeBuffer(this.paramsBuffer!, 0, paramsBuffer);
-            const pass2 = encoder.beginComputePass();
-            pass2.setBindGroup(0, this.bindGroup!);
-            pass2.setPipeline(this.pipelines.solveDistance!);
-            pass2.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
+            for (let i = 0; i < constraintIters; i++) {
+                const pass0 = encoder.beginComputePass();
+                pass0.setBindGroup(0, this.bindGroup0);
+                pass0.setPipeline(this.pipelines.solveDistance!);
+                pass0.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
+                pass0.end();
 
-            // 4. Collisions
-            pass2.setPipeline(this.pipelines.solveCollisions!);
-            pass2.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
-            pass2.end();
+                const pass1 = encoder.beginComputePass();
+                pass1.setBindGroup(0, this.bindGroup1);
+                pass1.setPipeline(this.pipelines.solveDistance!);
+                pass1.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
+                pass1.end();
+            }
+            
+            const colPass = encoder.beginComputePass();
+            colPass.setBindGroup(0, this.bindGroup0);
+            colPass.setPipeline(this.pipelines.solveCollisions!);
+            colPass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
+            colPass.end();
         }
 
         encoder.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
@@ -235,8 +250,8 @@ export class WebPhysics {
     }
 
     findAnchor(pos: THREE.Vector2): THREE.Vector2 | null {
-        const boxX = 11.9, boxY = 6.9;
-        const threshold = 0.5;
+        const boxX = 11.8, boxY = 6.8;
+        const threshold = 0.6;
 
         if (Math.abs(pos.x) > boxX - threshold || Math.abs(pos.y) > boxY - threshold) {
             const snapped = pos.clone();
@@ -275,11 +290,11 @@ export class WebPhysics {
     adjustRopeLength(rope: any, delta: number) {
         const minLen = 0.005;
         const maxLen = 0.2;
-        rope.segmentLength = Math.max(minLen, Math.min(maxLen, rope.segmentLength + delta * 0.005));
+        rope.segmentLength = Math.max(minLen, Math.min(maxLen, rope.segmentLength + delta * 0.01));
         
         for (let i = 0; i < rope.constraintIndices.length; i++) {
             const cIdx = rope.constraintIndices[i];
-            this.setDistConstraint(cIdx, rope.indices[i], rope.indices[i+1], rope.segmentLength, 0.000001);
+            this.setDistConstraint(cIdx, rope.indices[i], rope.indices[i+1], rope.segmentLength, 0.0001);
         }
         
         if (this.device && this.distConstraintBuffer) {

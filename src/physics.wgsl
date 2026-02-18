@@ -19,7 +19,7 @@ struct Params {
     numParticles: u32,
     numDistConstraints: u32,
     substeps: u32,
-    phase: u32, // 0 for even constraints, 1 for odd
+    phase: u32,
     mousePos: vec2<f32>,
     activeParticleIdx: i32,
     padding: i32,
@@ -34,34 +34,44 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.numParticles) { return; }
     
-    if (i == u32(params.activeParticleIdx)) {
-        particles[i].pos = params.mousePos;
-        particles[i].oldPos = params.mousePos;
+    var p = particles[i];
+    
+    // Manual sanity check instead of isfinite for compatibility
+    let is_corrupted = abs(p.pos.x) > 1000.0 || abs(p.pos.y) > 1000.0;
+    if (is_corrupted) {
+        particles[i].pos = vec2<f32>(0.0, 0.0);
+        particles[i].oldPos = vec2<f32>(0.0, 0.0);
+        particles[i].vel = vec2<f32>(0.0, 0.0);
         return;
     }
 
-    var p = particles[i];
+    if (i == u32(params.activeParticleIdx)) {
+        particles[i].pos = params.mousePos;
+        particles[i].oldPos = params.mousePos;
+        particles[i].vel = vec2<f32>(0.0);
+        return;
+    }
+
     if (p.invMass <= 0.0) { return; }
 
     let h = params.dt / f32(params.substeps);
     var vel = (p.pos - p.oldPos) / h;
     
-    // Gentle damping to prevent jitter, not to mask physics
-    vel = vel * 0.998;
+    // Substep damping to stabilize high-frequency oscillations
+    vel = vel * 0.999;
     vel = vel + vec2<f32>(0.0, params.gravity) * h;
 
     let nextPos = p.pos + vel * h;
     
     particles[i].oldPos = p.pos;
     particles[i].pos = nextPos;
+    particles[i].vel = vel;
 }
 
 @compute @workgroup_size(64)
 fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.numDistConstraints) { return; }
-    
-    // Graph Coloring: Sequential processing per phase to avoid race conditions
     if (i % 2u != params.phase) { return; }
     
     let c = distConstraints[i];
@@ -75,14 +85,19 @@ fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let delta = p1 - p2;
     let dist = length(delta);
-    if (dist < 0.000001) { return; }
+    if (dist < 0.0001) { return; }
 
     let h = params.dt / f32(params.substeps);
     let alpha = c.compliance / (h * h);
     let dLambda = -(dist - c.restLength) / (wSum + alpha);
-    let correction = delta * (dLambda / dist);
+    
+    // Clamp correction per step for stability
+    var correction = delta * (dLambda / dist);
+    let max_corr = 0.1;
+    if (length(correction) > max_corr) {
+        correction = normalize(correction) * max_corr;
+    }
 
-    // In Gauss-Seidel mode (sequential phases), we use 1.0 weight for perfect stiffness
     if (w1 > 0.0) { particles[c.idxA].pos += correction * w1; }
     if (w2 > 0.0) { particles[c.idxB].pos -= correction * w2; }
 }
@@ -95,8 +110,8 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = particles[i];
     if (p.invMass <= 0.0) { return; }
 
-    let bx = 11.9;
-    let by = 6.9;
+    let bx = 11.8;
+    let by = 6.8;
     
     if (p.pos.x > bx) { p.pos.x = bx; }
     if (p.pos.x < -bx) { p.pos.x = -bx; }
