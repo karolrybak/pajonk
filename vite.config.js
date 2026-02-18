@@ -12,6 +12,12 @@ export default defineConfig({
   optimizeDeps: {
     esbuildOptions: {
       target: 'esnext'
+    },
+    include: ['three']
+  },
+  resolve: {
+    alias: {
+      'three/webgpu': 'three/src/renderers/webgpu/WebGPURenderer.js'
     }
   }
 });

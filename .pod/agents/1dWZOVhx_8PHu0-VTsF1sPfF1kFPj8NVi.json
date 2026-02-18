@@ -1,0 +1,17 @@
+{
+  "config": {
+    "name": "Agent 1dWZ",
+    "provider": {
+      "type": "tampermonkey"
+    },
+    "workspace": {
+      "mode": "ignored",
+      "path": ""
+    },
+    "permissions": {
+      "fileWrite": "prompt",
+      "taskExec": "prompt"
+    }
+  },
+  "history": []
+}

@@ -7,12 +7,18 @@
     <style>
         body { margin: 0; overflow: hidden; background: #111; color: white; font-family: sans-serif; }
         #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; z-index: 10; }
+        .warning { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #333; padding: 20px; border-radius: 8px; text-align: center; z-index: 100; }
+        .warning.show { display: block; }
     </style>
 </head>
 <body>
     <div id="ui">
         WASD: Move on walls | Space: Jump | E: Pin | Current State: <span id="state">START</span>
     </div>
-    <script type="module" src="/src/main.js"></script>
+    <div id="warning" class="warning">
+        <h2>WebGPU niedostępna</h2>
+        <p>Wymagany Chrome/Edge 113+, Opera 99+ lub Firefox Nightly</p>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
