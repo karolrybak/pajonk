@@ -43,6 +43,7 @@ function init() {
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('wheel', onWheel);
+    window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', () => renderer.setSize(window.innerWidth, window.innerHeight));
 
     animate();
@@ -80,9 +81,14 @@ function onMouseMove(e) {
 
 function onWheel(e) {
     if (activeRope) {
-        // Increased sensitivity and corrected direction for intuitive 'reeling'
         const delta = e.deltaY * 0.01;
         activeRope.length = Math.max(0.1, activeRope.length + delta);
+    }
+}
+
+function onKeyDown(e) {
+    if (e.code === 'KeyQ') {
+        physics.spawnBall(mouseWorld);
     }
 }
 
@@ -92,7 +98,7 @@ function animate() {
     physics.update(dt, mouseWorld, activeRope);
     renderer.render(scene, camera);
     
-    stateDisplay.innerText = `Click on wall/web to start/end silk | Scroll to reel | Active: ${activeRope ? 'YES' : 'NO'}`;
+    stateDisplay.innerText = `Click: Build Web | Scroll: Reel | Q: Spawn Ball | Active: ${activeRope ? 'YES' : 'NO'}`;
 }
 
 init();
