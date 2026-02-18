@@ -49,6 +49,11 @@ async function init() {
     const arenaGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(BOUNDS.width, BOUNDS.height, 0));
     scene.add(new THREE.LineSegments(arenaGeo, new THREE.LineBasicMaterial({ color: 0x444444 })));
 
+    // Obstacle visual
+    const circle = new THREE.Mesh(new THREE.CircleGeometry(1.5, 32), new THREE.MeshBasicMaterial({ color: 0x222222 }));
+    circle.position.set(4, 2, -1);
+    scene.add(circle);
+
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('wheel', onWheel);
