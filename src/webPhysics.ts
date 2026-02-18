@@ -9,9 +9,7 @@ export class WebPhysics {
     bounds: { width: number; height: number };
     ready: boolean = false;
     
-    // Float32Array where each particle is 8 floats (32 bytes)
     particles = new Float32Array(MAX_PARTICLES * 8);
-    // Uint32Array where each constraint is 4 uints/floats (16 bytes)
     distConstraints = new Uint32Array(MAX_CONSTRAINTS * 4);
 
     numParticles = 0;
@@ -87,9 +85,6 @@ export class WebPhysics {
         this.pipelines.solveDistance = createPipe('solveDistance');
         this.pipelines.solveCollisions = createPipe('solveCollisions');
 
-        // Clear buffer initially
-        device.queue.writeBuffer(this.particleBuffer, 0, this.particles);
-
         this.ready = true;
     }
 
@@ -99,22 +94,20 @@ export class WebPhysics {
         const segments = 20;
         const indices: number[] = [];
         const constraintIndices: number[] = [];
-        const initialSegLen = 0.2; 
+        const restLen = 0.4; 
 
         for (let i = 0; i < segments; i++) {
             const idx = this.numParticles++;
             indices.push(idx);
-            // Vertical initialization
-            const pos = new THREE.Vector2(startPos.x, startPos.y - i * initialSegLen);
-            // Pin only the start initially, end is controlled by mouse via activeParticleIdx
-            const isFixed = (i === 0);
-            this.setParticle(idx, pos, isFixed ? 0.0 : 1.0);
+            // Init at rest length to avoid spring explosion
+            const pos = new THREE.Vector2(startPos.x, startPos.y - i * restLen);
+            this.setParticle(idx, pos, i === 0 ? 0.0 : 1.0);
         }
 
         for (let i = 0; i < segments - 1; i++) {
             const cIdx = this.numDistConstraints++;
             constraintIndices.push(cIdx);
-            this.setDistConstraint(cIdx, indices[i]!, indices[i+1]!, initialSegLen, 0.000001);
+            this.setDistConstraint(cIdx, indices[i]!, indices[i+1]!, restLen, 0.000001);
         }
 
         const geo = new THREE.BufferGeometry();
@@ -122,7 +115,7 @@ export class WebPhysics {
         const mesh = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff }));
         this.scene.add(mesh);
 
-        const rope = { indices, constraintIndices, mesh, segments, segmentLength: initialSegLen };
+        const rope = { indices, constraintIndices, mesh, segments, segmentLength: restLen };
         this.ropes.push(rope);
         this.activeRope = rope;
         this.syncGPU();
@@ -138,14 +131,13 @@ export class WebPhysics {
         this.particles[off + 4] = 0; 
         this.particles[off + 5] = 0; 
         this.particles[off + 6] = invMass;
-        this.particles[off + 7] = 0.1; // radius
+        this.particles[off + 7] = 0.15; // slightly thicker radius
     }
 
     setDistConstraint(i: number, a: number, b: number, len: number, compliance: number): void {
         const off = i * 4;
         this.distConstraints[off] = a;
         this.distConstraints[off + 1] = b;
-        // Create a temporary view to write floats into the Uint32 buffer
         const fv = new Float32Array(this.distConstraints.buffer, this.distConstraints.byteOffset, this.distConstraints.length);
         fv[off + 2] = len;
         fv[off + 3] = compliance;
@@ -160,22 +152,19 @@ export class WebPhysics {
     update(mousePos: THREE.Vector2): void {
         if (!this.ready || !this.device || this.isReadingBack) return;
 
-        const substeps = 12;
+        const substeps = 15;
         const dt = 1.0 / 60.0;
 
-        // CORRECT UNIFORM BUFFER LAYOUT (Mixed Types)
         const paramsBuffer = new ArrayBuffer(64);
         const paramsF32 = new Float32Array(paramsBuffer);
         const paramsU32 = new Uint32Array(paramsBuffer);
         const paramsI32 = new Int32Array(paramsBuffer);
 
-        // Layout must match WGSL struct Params alignment
         paramsF32[0] = dt; 
-        paramsF32[1] = -15.0; // gravity
+        paramsF32[1] = -20.0; 
         paramsU32[2] = this.numParticles;
         paramsU32[3] = this.numDistConstraints;
         paramsU32[4] = substeps;
-        paramsU32[5] = 0; // padding
         paramsF32[6] = mousePos.x;
         paramsF32[7] = mousePos.y;
         paramsI32[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1;
@@ -215,11 +204,7 @@ export class WebPhysics {
                 const attr = rope.mesh.geometry.getAttribute('position');
                 for (let i = 0; i < rope.segments; i++) {
                     const idx = rope.indices[i];
-                    const px = this.particles[idx * 8];
-                    const py = this.particles[idx * 8 + 1];
-                    if (!isNaN(px!) && !isNaN(py!)) {
-                        attr.setXYZ(i, px!, py!, 0);
-                    }
+                    attr.setXYZ(i, this.particles[idx * 8]!, this.particles[idx * 8 + 1]!, 0);
                 }
                 attr.needsUpdate = true;
             }
@@ -232,23 +217,19 @@ export class WebPhysics {
 
     pinActiveRope(rope: any, pos: THREE.Vector2) {
         const lastIdx = rope.indices[rope.segments - 1];
-        // When pinning, we just set the particle mass to infinite (invMass = 0)
-        // but keep the current position
         this.setParticle(lastIdx, pos, 0.0);
         this.activeRope = null;
         this.syncGPU();
     }
 
     adjustRopeLength(rope: any, delta: number) {
-        const minLen = 0.05;
+        const minLen = 0.02;
         const maxLen = 1.0;
         rope.segmentLength = Math.max(minLen, Math.min(maxLen, rope.segmentLength + delta * 0.02));
         
         for (let i = 0; i < rope.constraintIndices.length; i++) {
             const cIdx = rope.constraintIndices[i];
-            const idxA = rope.indices[i];
-            const idxB = rope.indices[i+1];
-            this.setDistConstraint(cIdx, idxA, idxB, rope.segmentLength, 0.000001);
+            this.setDistConstraint(cIdx, rope.indices[i], rope.indices[i+1], rope.segmentLength, 0.000001);
         }
         
         if (this.device && this.distConstraintBuffer) {
