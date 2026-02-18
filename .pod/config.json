@@ -1,0 +1,51 @@
+{
+  "projectRoot": "/home/kr/Documents/pajonk",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 7401,
+    "serveGui": true
+  },
+  "agentControl": {
+    "createCommand": "",
+    "wakeCommand": "",
+    "timeout": 3000
+  },
+  "security": {
+    "readOnlyPatterns": [
+      "**/node_modules/**",
+      "**/.git/**",
+      "**/bun.lockb",
+      "**/package-lock.json"
+    ],
+    "allowedCommands": [
+      "ls",
+      "cat",
+      "grep",
+      "find",
+      "git",
+      "bun",
+      "bunx",
+      "npm",
+      "pnpm",
+      "yarn"
+    ]
+  },
+  "notifications": {
+    "enableDesktop": true,
+    "enableGui": true
+  },
+  "profiles": [
+    {
+      "name": "default",
+      "filter": "+ **/*\n- **/node_modules/**\n- **/dist/**\n- **/.output/**"
+    }
+  ],
+  "tasks": {
+    "build": "bun scripts/build.ts",
+    "compile": "tsc --noEmit",
+    "test": "bun scripts/test.ts",
+    "lint": "bun scripts/lint.ts",
+    "format": "bun scripts/format.ts"
+  },
+  "version": "0.0.39"
+}
