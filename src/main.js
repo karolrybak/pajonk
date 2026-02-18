@@ -22,6 +22,24 @@ function init() {
     const arenaGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(BOUNDS.width, BOUNDS.height, 0));
     scene.add(new THREE.LineSegments(arenaGeo, new THREE.LineBasicMaterial({ color: 0x444444 })));
 
+    // Visualize SDF obstacles
+    const obstacleMat = new THREE.MeshBasicMaterial({ color: 0x222222 });
+    
+    // Circle 1
+    const c1 = new THREE.Mesh(new THREE.CircleGeometry(1.5, 32), obstacleMat);
+    c1.position.set(4, 2, -1);
+    scene.add(c1);
+
+    // Circle 2
+    const c2 = new THREE.Mesh(new THREE.CircleGeometry(1.2, 32), obstacleMat);
+    c2.position.set(-5, -1, -1);
+    scene.add(c2);
+
+    // Box 1
+    const b1 = new THREE.Mesh(new THREE.BoxGeometry(6, 1, 0.1), obstacleMat);
+    b1.position.set(0, -4, -1);
+    scene.add(b1);
+
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('wheel', onWheel);
