@@ -88,7 +88,8 @@ function onWheel(e) {
 
 function onKeyDown(e) {
     if (e.code === 'KeyQ') {
-        physics.spawnBall(mouseWorld);
+        physics.spawnBall(mouseWorld, activeRope);
+        if (activeRope) activeRope = null;
     }
 }
 
