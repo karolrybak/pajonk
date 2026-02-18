@@ -10,7 +10,7 @@ export class WebPhysics {
     ready: boolean = false;
     
     particles = new Float32Array(MAX_PARTICLES * 8);
-    distConstraints = new Uint32Array(MAX_CONSTRAINTS * 4);
+    distConstraints = new Float32Array(MAX_CONSTRAINTS * 4); // Use f32 for everything to be safe
 
     numParticles = 0;
     numDistConstraints = 0;
@@ -88,45 +88,17 @@ export class WebPhysics {
         this.ready = true;
     }
 
-    findAnchor(pos: THREE.Vector2): THREE.Vector2 | null {
-        const boxX = 11.8, boxY = 6.8;
-        const threshold = 0.5;
-
-        if (Math.abs(pos.x) > boxX - threshold || Math.abs(pos.y) > boxY - threshold) {
-            const snapped = pos.clone();
-            if (boxX - Math.abs(pos.x) < threshold) snapped.x = Math.sign(pos.x) * boxX;
-            if (boxY - Math.abs(pos.y) < threshold) snapped.y = Math.sign(pos.y) * boxY;
-            return snapped;
-        }
-
-        const circlePos = new THREE.Vector2(4, 2);
-        const circleRad = 1.5;
-        if (pos.distanceTo(circlePos) < circleRad + threshold) {
-            return pos.clone().sub(circlePos).normalize().multiplyScalar(circleRad).add(circlePos);
-        }
-
-        for (const rope of this.ropes) {
-            if (rope === this.activeRope) continue;
-            for (let i = 0; i < rope.segments; i++) {
-                const pIdx = rope.indices[i] * 8;
-                const ropePos = new THREE.Vector2(this.particles[pIdx], this.particles[pIdx + 1]);
-                if (pos.distanceTo(ropePos) < 0.2) return ropePos.clone();
-            }
-        }
-
-        return null;
-    }
-
     createRope(startPos: THREE.Vector2): any {
-        const segments = 120;
+        const segments = 80;
         const indices: number[] = [];
         const constraintIndices: number[] = [];
-        const restLen = 0.08;
+        const restLen = 0.04;
 
         for (let i = 0; i < segments; i++) {
             const idx = this.numParticles++;
             indices.push(idx);
-            const initialPos = startPos.clone().add(new THREE.Vector2(0, -i * 0.01));
+            // Linear layout prevents division by zero or overlapping nodes
+            const initialPos = startPos.clone().add(new THREE.Vector2(0, -i * restLen));
             const invMass = (i === 0 || i === segments - 1) ? 0.0 : 1.0;
             this.setParticle(idx, initialPos, invMass);
         }
@@ -140,10 +112,10 @@ export class WebPhysics {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(segments * 3), 3));
         
-        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
+        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
         this.scene.add(line);
 
-        const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x00ffff, size: 0.08, sizeAttenuation: true }));
+        const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffaa00, size: 0.12 }));
         this.scene.add(points);
 
         const rope = { indices, constraintIndices, mesh: line, pointsMesh: points, segments, segmentLength: restLen };
@@ -159,19 +131,17 @@ export class WebPhysics {
         this.particles[off + 1] = pos.y;
         this.particles[off + 2] = pos.x; 
         this.particles[off + 3] = pos.y;
-        this.particles[off + 4] = 0; 
-        this.particles[off + 5] = 0; 
         this.particles[off + 6] = invMass;
-        this.particles[off + 7] = 0.06;
+        this.particles[off + 7] = 0.04;
     }
 
     setDistConstraint(i: number, a: number, b: number, len: number, compliance: number): void {
         const off = i * 4;
-        this.distConstraints[off] = a;
-        this.distConstraints[off + 1] = b;
-        const fv = new Float32Array(this.distConstraints.buffer, this.distConstraints.byteOffset, this.distConstraints.length);
-        fv[off + 2] = len;
-        fv[off + 3] = compliance;
+        const uv = new Uint32Array(this.distConstraints.buffer, this.distConstraints.byteOffset, this.distConstraints.length);
+        uv[off] = a;
+        uv[off + 1] = b;
+        this.distConstraints[off + 2] = len;
+        this.distConstraints[off + 3] = compliance;
     }
 
     syncGPU(): void {
@@ -183,36 +153,55 @@ export class WebPhysics {
     update(mousePos: THREE.Vector2): void {
         if (!this.ready || !this.device || this.isReadingBack) return;
 
-        const substeps = 30;
+        const substeps = 40;
         const dt = 1.0 / 60.0;
 
+        // Buffer layout matching WGSL struct Params
         const paramsBuffer = new ArrayBuffer(64);
-        const paramsF32 = new Float32Array(paramsBuffer);
-        const paramsU32 = new Uint32Array(paramsBuffer);
-        const paramsI32 = new Int32Array(paramsBuffer);
+        const f32 = new Float32Array(paramsBuffer);
+        const u32 = new Uint32Array(paramsBuffer);
+        const i32 = new Int32Array(paramsBuffer);
 
-        paramsF32[0] = dt; 
-        paramsF32[1] = -22.0; 
-        paramsU32[2] = this.numParticles;
-        paramsU32[3] = this.numDistConstraints;
-        paramsU32[4] = substeps;
-        paramsF32[6] = mousePos.x;
-        paramsF32[7] = mousePos.y;
-        paramsI32[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1;
-
-        this.device.queue.writeBuffer(this.paramsBuffer!, 0, paramsBuffer);
+        f32[0] = dt; 
+        f32[1] = -15.0; 
+        u32[2] = this.numParticles;
+        u32[3] = this.numDistConstraints;
+        u32[4] = substeps;
+        // f32[5] = phase will be set in loop
+        f32[6] = mousePos.x;
+        f32[7] = mousePos.y;
+        i32[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1;
 
         const encoder = this.device.createCommandEncoder();
         for (let s = 0; s < substeps; s++) {
+            // Update phase (0 or 1) per constraint solver dispatch
+            u32[5] = 0; // Phase 0
+            this.device.queue.writeBuffer(this.paramsBuffer!, 0, paramsBuffer);
+            
             const pass = encoder.beginComputePass();
             pass.setBindGroup(0, this.bindGroup!);
+            
+            // 1. Integration (only once per substep)
             pass.setPipeline(this.pipelines.integrate!);
             pass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
+            
+            // 2. Constraint Solve (Phase 0 - Even)
             pass.setPipeline(this.pipelines.solveDistance!);
             pass.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
-            pass.setPipeline(this.pipelines.solveCollisions!);
-            pass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
             pass.end();
+
+            // 3. Constraint Solve (Phase 1 - Odd)
+            u32[5] = 1; 
+            this.device.queue.writeBuffer(this.paramsBuffer!, 0, paramsBuffer);
+            const pass2 = encoder.beginComputePass();
+            pass2.setBindGroup(0, this.bindGroup!);
+            pass2.setPipeline(this.pipelines.solveDistance!);
+            pass2.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1);
+
+            // 4. Collisions
+            pass2.setPipeline(this.pipelines.solveCollisions!);
+            pass2.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1);
+            pass2.end();
         }
 
         encoder.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
@@ -245,6 +234,35 @@ export class WebPhysics {
         }
     }
 
+    findAnchor(pos: THREE.Vector2): THREE.Vector2 | null {
+        const boxX = 11.9, boxY = 6.9;
+        const threshold = 0.5;
+
+        if (Math.abs(pos.x) > boxX - threshold || Math.abs(pos.y) > boxY - threshold) {
+            const snapped = pos.clone();
+            if (boxX - Math.abs(pos.x) < threshold) snapped.x = Math.sign(pos.x) * boxX;
+            if (boxY - Math.abs(pos.y) < threshold) snapped.y = Math.sign(pos.y) * boxY;
+            return snapped;
+        }
+
+        const circlePos = new THREE.Vector2(4, 2);
+        const circleRad = 1.5;
+        if (pos.distanceTo(circlePos) < circleRad + threshold) {
+            return pos.clone().sub(circlePos).normalize().multiplyScalar(circleRad).add(circlePos);
+        }
+
+        for (const rope of this.ropes) {
+            if (rope === this.activeRope) continue;
+            for (let i = 0; i < rope.segments; i += 4) {
+                const pIdx = rope.indices[i] * 8;
+                const ropePos = new THREE.Vector2(this.particles[pIdx], this.particles[pIdx + 1]);
+                if (pos.distanceTo(ropePos) < 0.25) return ropePos.clone();
+            }
+        }
+
+        return null;
+    }
+
     pinActiveRope(rope: any, anchorPos: THREE.Vector2) {
         const lastIdx = rope.indices[rope.segments - 1];
         this.setParticle(lastIdx, anchorPos, 0.0);
@@ -255,9 +273,9 @@ export class WebPhysics {
     }
 
     adjustRopeLength(rope: any, delta: number) {
-        const minLen = 0.01;
-        const maxLen = 0.3;
-        rope.segmentLength = Math.max(minLen, Math.min(maxLen, rope.segmentLength + delta * 0.01));
+        const minLen = 0.005;
+        const maxLen = 0.2;
+        rope.segmentLength = Math.max(minLen, Math.min(maxLen, rope.segmentLength + delta * 0.005));
         
         for (let i = 0; i < rope.constraintIndices.length; i++) {
             const cIdx = rope.constraintIndices[i];

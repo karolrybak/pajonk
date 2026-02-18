@@ -19,10 +19,10 @@ struct Params {
     numParticles: u32,
     numDistConstraints: u32,
     substeps: u32,
-    padding1: u32,
+    phase: u32, // 0 for even constraints, 1 for odd
     mousePos: vec2<f32>,
     activeParticleIdx: i32,
-    padding2: i32,
+    padding: i32,
 };
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -34,11 +34,9 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.numParticles) { return; }
     
-    // Force snap to mouse if this is the active builder node
     if (i == u32(params.activeParticleIdx)) {
         particles[i].pos = params.mousePos;
         particles[i].oldPos = params.mousePos;
-        particles[i].vel = vec2<f32>(0.0);
         return;
     }
 
@@ -48,27 +46,23 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let h = params.dt / f32(params.substeps);
     var vel = (p.pos - p.oldPos) / h;
     
-    // Velocity limit for stability
-    let speed = length(vel);
-    if (speed > 80.0) {
-        vel = normalize(vel) * 80.0;
-    }
-
-    // Air resistance & gravity
-    vel = vel * 0.994;
+    // Gentle damping to prevent jitter, not to mask physics
+    vel = vel * 0.998;
     vel = vel + vec2<f32>(0.0, params.gravity) * h;
 
     let nextPos = p.pos + vel * h;
     
     particles[i].oldPos = p.pos;
     particles[i].pos = nextPos;
-    particles[i].vel = vel;
 }
 
 @compute @workgroup_size(64)
 fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.numDistConstraints) { return; }
+    
+    // Graph Coloring: Sequential processing per phase to avoid race conditions
+    if (i % 2u != params.phase) { return; }
     
     let c = distConstraints[i];
     let p1 = particles[c.idxA].pos;
@@ -81,15 +75,14 @@ fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let delta = p1 - p2;
     let dist = length(delta);
-    if (dist < 0.00001) { return; }
+    if (dist < 0.000001) { return; }
 
     let h = params.dt / f32(params.substeps);
     let alpha = c.compliance / (h * h);
     let dLambda = -(dist - c.restLength) / (wSum + alpha);
-    
-    // Relax weight (0.6) for GPU parallelism
-    let correction = delta * (dLambda / dist) * 0.6;
+    let correction = delta * (dLambda / dist);
 
+    // In Gauss-Seidel mode (sequential phases), we use 1.0 weight for perfect stiffness
     if (w1 > 0.0) { particles[c.idxA].pos += correction * w1; }
     if (w2 > 0.0) { particles[c.idxB].pos -= correction * w2; }
 }
@@ -102,8 +95,8 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = particles[i];
     if (p.invMass <= 0.0) { return; }
 
-    let bx = 11.8;
-    let by = 6.8;
+    let bx = 11.9;
+    let by = 6.9;
     
     if (p.pos.x > bx) { p.pos.x = bx; }
     if (p.pos.x < -bx) { p.pos.x = -bx; }
