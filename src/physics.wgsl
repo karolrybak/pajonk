@@ -34,7 +34,7 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
     if (i >= params.numParticles) { return; }
     
-    // Snap to mouse if active
+    // Force snap to mouse if this is the active builder node
     if (i == u32(params.activeParticleIdx)) {
         particles[i].pos = params.mousePos;
         particles[i].oldPos = params.mousePos;
@@ -48,14 +48,14 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     let h = params.dt / f32(params.substeps);
     var vel = (p.pos - p.oldPos) / h;
     
-    // Velocity Clamping to prevent explosions
+    // Velocity limit for stability
     let speed = length(vel);
-    if (speed > 100.0) {
-        vel = normalize(vel) * 100.0;
+    if (speed > 80.0) {
+        vel = normalize(vel) * 80.0;
     }
 
-    // Damping & Gravity
-    vel = vel * 0.992;
+    // Air resistance & gravity
+    vel = vel * 0.994;
     vel = vel + vec2<f32>(0.0, params.gravity) * h;
 
     let nextPos = p.pos + vel * h;
@@ -87,8 +87,8 @@ fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
     let alpha = c.compliance / (h * h);
     let dLambda = -(dist - c.restLength) / (wSum + alpha);
     
-    // Jacobi-style damping (0.5) prevents oscillation fighting on GPU
-    let correction = delta * (dLambda / dist) * 0.5;
+    // Relax weight (0.6) for GPU parallelism
+    let correction = delta * (dLambda / dist) * 0.6;
 
     if (w1 > 0.0) { particles[c.idxA].pos += correction * w1; }
     if (w2 > 0.0) { particles[c.idxB].pos -= correction * w2; }
@@ -102,7 +102,6 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = particles[i];
     if (p.invMass <= 0.0) { return; }
 
-    // Arena hard limits
     let bx = 11.8;
     let by = 6.8;
     
@@ -111,7 +110,6 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     if (p.pos.y > by) { p.pos.y = by; }
     if (p.pos.y < -by) { p.pos.y = -by; }
 
-    // Circle Obstacle Collision (SDF)
     let circlePos = vec2<f32>(4.0, 2.0);
     let circleRad = 1.5;
     let distToC = length(p.pos - circlePos);

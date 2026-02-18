@@ -1,34 +1,15 @@
 import * as THREE from 'three';
-// @ts-ignore - WebGPU is built-in to three.js r182+
+// @ts-ignore
 import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { WebPhysics } from './webPhysics';
-
-// WebGPU global types
-declare global {
-  interface Navigator {
-    gpu?: GPU;
-  }
-}
 
 let scene: THREE.Scene, camera: THREE.OrthographicCamera, renderer: any, physics: WebPhysics, stateDisplay: HTMLSpanElement;
 let activeRope: any = null;
 const mouseWorld = new THREE.Vector2();
 const BOUNDS = { width: 24, height: 14 };
 
-// WebGPU Detection
-async function checkWebGPU(): Promise<boolean> {
-    if (!navigator.gpu) {
-        const warning = document.getElementById('warning');
-        if (warning) warning.classList.add('show');
-        console.error('WebGPU nie dostępna w tej przeglądarce');
-        return false;
-    }
-    return true;
-}
-
 async function init() {
-    // Check WebGPU support
-    if (!(await checkWebGPU())) return;
+    if (!navigator.gpu) return;
 
     stateDisplay = document.getElementById('state') as HTMLSpanElement;
     scene = new THREE.Scene();
@@ -40,17 +21,18 @@ async function init() {
     renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(renderer.domElement);
 
-    // Wait for WebGPU renderer to be ready
     await renderer.init();
 
     physics = new WebPhysics(renderer, scene, BOUNDS);
     await physics.init();
 
-    const arenaGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(BOUNDS.width, BOUNDS.height, 0));
-    scene.add(new THREE.LineSegments(arenaGeo, new THREE.LineBasicMaterial({ color: 0x444444 })));
+    // Visual Frame
+    const frameMat = new THREE.LineBasicMaterial({ color: 0x888888, linewidth: 2 });
+    const frameGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(BOUNDS.width - 0.2, BOUNDS.height - 0.2, 0));
+    scene.add(new THREE.LineSegments(frameGeo, frameMat));
 
     // Obstacle visual
-    const circle = new THREE.Mesh(new THREE.CircleGeometry(1.5, 32), new THREE.MeshBasicMaterial({ color: 0x222222 }));
+    const circle = new THREE.Mesh(new THREE.CircleGeometry(1.5, 32), new THREE.MeshBasicMaterial({ color: 0x333333 }));
     circle.position.set(4, 2, -1);
     scene.add(circle);
 
@@ -71,13 +53,17 @@ function getMouseWorld(e: MouseEvent): THREE.Vector2 {
 function onMouseDown(e: MouseEvent) {
     if (!physics.ready) return;
     const pos = getMouseWorld(e);
+    const anchor = physics.findAnchor(pos);
     
     if (activeRope) {
-        // Pin to wall or just release
-        physics.pinActiveRope(activeRope, pos);
-        activeRope = null;
+        if (anchor) {
+            physics.pinActiveRope(activeRope, anchor);
+            activeRope = null;
+        }
     } else {
-        activeRope = physics.createRope(pos);
+        if (anchor) {
+            activeRope = physics.createRope(anchor);
+        }
     }
 }
 
@@ -87,7 +73,7 @@ function onMouseMove(e: MouseEvent) {
 
 function onWheel(e: WheelEvent) {
     if (activeRope) {
-        const delta = e.deltaY * 0.01;
+        const delta = e.deltaY * 0.002;
         physics.adjustRopeLength(activeRope, delta);
     }
 }
@@ -99,7 +85,16 @@ function animate() {
     }
     renderer.render(scene, camera);
     
-    stateDisplay.innerText = `XPBD WebGPU | Active: ${activeRope ? 'YES (Scroll to reel)' : 'NO (Click to start)'}`;
+    const anchor = physics.findAnchor(mouseWorld);
+    const canAnchor = anchor !== null;
+
+    if (activeRope) {
+        const color = canAnchor ? 0x00ff00 : 0xff0000;
+        activeRope.mesh.material.color.set(color);
+        activeRope.pointsMesh.material.color.set(color);
+    }
+
+    stateDisplay.innerText = `XPBD | Active: ${activeRope ? 'YES' : 'NO'} | Valid Anchor: ${canAnchor ? 'YES' : 'NO'}`;
 }
 
 init();
