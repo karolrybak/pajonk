@@ -116,7 +116,13 @@ fn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {
     if (wSum <= 0.0) { return; }
 
     let dLambda = -dist / wSum;
-    let correction = normalize(delta) * dLambda;
+    var correction = normalize(delta) * dLambda;
+    let maxCorrection = 0.05; // per iteration - dostosuj w razie potrzeby (0.01-0.1)
+    let corrLen = length(correction);
+    if (corrLen > maxCorrection) {
+        correction = (correction / corrLen) * maxCorrection;
+    }    
+    correction = correction * 0.8;
     if (wp > 0.0) { particles[att.pIdx].pos += correction * wp; }
     if (wa > 0.0) { particles[att.aIdx].pos -= correction * wa * (1.0 - att.t); }
     if (wb > 0.0) { particles[att.bIdx].pos -= correction * wb * att.t; }

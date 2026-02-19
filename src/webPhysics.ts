@@ -9,7 +9,7 @@ export class WebPhysics {
     scene: THREE.Scene;
     bounds: { width: number; height: number };
     ready: boolean = false;
-    
+
     particles = new Float32Array(MAX_PARTICLES * 8);
     distConstraints = new Float32Array(MAX_CONSTRAINTS * 4);
     attachments = new Float32Array(MAX_ATTACHMENTS * 4);
@@ -51,7 +51,7 @@ export class WebPhysics {
         this.particleBuffer = device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
         this.distConstraintBuffer = device.createBuffer({ size: this.distConstraints.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.attachmentBuffer = device.createBuffer({ size: this.attachments.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-        
+
         const paramsSize = 64;
         this.paramsBuffer0 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         this.paramsBuffer1 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -98,7 +98,7 @@ export class WebPhysics {
         const idx = this.numParticles++;
         this.setParticle(idx, pos, 0.5 / (radius * radius)); // Mass proportional to area
         this.particles[idx * 8 + 7] = radius;
-        
+
         const geo = new THREE.CircleGeometry(radius, 16);
         const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.9 }));
         this.scene.add(mesh);
@@ -122,11 +122,11 @@ export class WebPhysics {
             if (rope === this.activeRope) continue;
             for (let i = 0; i < rope.segments - 1; i++) {
                 const p1 = this.getParticlePos(rope.indices[i]!);
-                const p2 = this.getParticlePos(rope.indices[i+1]!);
+                const p2 = this.getParticlePos(rope.indices[i + 1]!);
                 const line = p2.clone().sub(p1), lenSq = line.lengthSq();
                 const t = Math.max(0, Math.min(1, pos.clone().sub(p1).dot(line) / lenSq));
                 const proj = p1.clone().add(line.multiplyScalar(t));
-                if (pos.distanceTo(proj) < 0.25) return { pos: proj, type: 'rope', aIdx: rope.indices[i], bIdx: rope.indices[i+1], t };
+                if (pos.distanceTo(proj) < 0.25) return { pos: proj, type: 'rope', aIdx: rope.indices[i], bIdx: rope.indices[i + 1], t };
             }
         }
         return null;
@@ -140,12 +140,13 @@ export class WebPhysics {
         for (let i = 0; i < segments; i++) {
             const idx = this.numParticles++;
             indices.push(idx);
-            this.setParticle(idx, anchor.pos.clone().add(new THREE.Vector2(0, -i * restLen)), i === 0 ? 0.0 : 1.0);
+            const invMass = (i === 0 && anchor.type !== 'rope') ? 0.0 : 1.0;
+            this.setParticle(idx, anchor.pos.clone().add(new THREE.Vector2(0, -i * restLen)), invMass);
         }
         if (anchor.type === 'rope') this.addAttachment(indices[0]!, anchor.aIdx, anchor.bIdx, anchor.t);
         for (let i = 0; i < segments - 1; i++) {
             const cIdx = this.numDistConstraints++;
-            constraintIndices.push(cIdx); this.setDistConstraint(cIdx, indices[i]!, indices[i+1]!, restLen, 0.0);
+            constraintIndices.push(cIdx); this.setDistConstraint(cIdx, indices[i]!, indices[i + 1]!, restLen, 0.001);
         }
         const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(segments * 3), 3));
         const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
@@ -164,15 +165,15 @@ export class WebPhysics {
 
     setParticle(i: number, pos: THREE.Vector2, invMass: number): void {
         const off = i * 8;
-        this.particles[off] = pos.x; this.particles[off+1] = pos.y;
-        this.particles[off+2] = pos.x; this.particles[off+3] = pos.y;
-        this.particles[off+4] = 0; this.particles[off+5] = 0;
-        this.particles[off+6] = invMass; this.particles[off+7] = 0.04;
+        this.particles[off] = pos.x; this.particles[off + 1] = pos.y;
+        this.particles[off + 2] = pos.x; this.particles[off + 3] = pos.y;
+        this.particles[off + 4] = 0; this.particles[off + 5] = 0;
+        this.particles[off + 6] = invMass; this.particles[off + 7] = 0.04;
     }
 
     setDistConstraint(i: number, a: number, b: number, len: number, comp: number): void {
         const off = i * 4, uv = new Uint32Array(this.distConstraints.buffer);
-        uv[off] = a; uv[off+1] = b; this.distConstraints[off+2] = len; this.distConstraints[off+3] = comp;
+        uv[off] = a; uv[off + 1] = b; this.distConstraints[off + 2] = len; this.distConstraints[off + 3] = comp;
     }
 
     syncGPU(): void {
@@ -204,7 +205,7 @@ export class WebPhysics {
             }
             // Solve Inter-particle collisions (Balls vs Ropes, Balls vs Balls)
             const ppCol = encoder.beginComputePass(); ppCol.setBindGroup(0, this.bindGroup0!); ppCol.setPipeline(this.pipelines.solveParticleCollisions!); ppCol.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1); ppCol.end();
-            
+
             const col = encoder.beginComputePass(); col.setBindGroup(0, this.bindGroup0!); col.setPipeline(this.pipelines.solveCollisions!); col.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1); col.end();
         }
         encoder.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
@@ -221,14 +222,14 @@ export class WebPhysics {
             this.stagingBuffer.unmap();
             for (const rope of this.ropes) {
                 const attr = rope.mesh.geometry.getAttribute('position');
-                for (let i = 0; i < rope.segments; i++) attr.setXYZ(i, this.particles[rope.indices[i]*8]!, this.particles[rope.indices[i]*8+1]!, 0);
+                for (let i = 0; i < rope.segments; i++) attr.setXYZ(i, this.particles[rope.indices[i] * 8]!, this.particles[rope.indices[i] * 8 + 1]!, 0);
                 attr.needsUpdate = true;
             }
             for (const ball of this.balls) {
                 const px = this.particles[ball.idx * 8], py = this.particles[ball.idx * 8 + 1];
                 ball.mesh.position.set(px!, py!, -0.1);
             }
-        } catch (e) {} finally { this.isReadingBack = false; }
+        } catch (e) { } finally { this.isReadingBack = false; }
     }
 
     pinActiveRope(rope: any, anchor: any) {
@@ -239,8 +240,8 @@ export class WebPhysics {
     }
 
     adjustRopeLength(rope: any, delta: number) {
-        rope.segmentLength = Math.max(0.0001, Math.min(0.5, rope.segmentLength - delta * 0.05));
-        for (let i = 0; i < rope.constraintIndices.length; i++) this.setDistConstraint(rope.constraintIndices[i], rope.indices[i], rope.indices[i+1], rope.segmentLength, 0.0);
+        rope.segmentLength = Math.max(0.001, Math.min(0.5, rope.segmentLength - delta * 0.005));
+        for (let i = 0; i < rope.constraintIndices.length; i++) this.setDistConstraint(rope.constraintIndices[i], rope.indices[i], rope.indices[i + 1], rope.segmentLength, 0.0);
         this.device?.queue.writeBuffer(this.distConstraintBuffer!, 0, this.distConstraints);
     }
 }
