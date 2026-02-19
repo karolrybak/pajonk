@@ -185,7 +185,11 @@ export class WebPhysics {
         if (this.pendulum) {
             const pPos = this.getParticlePos(this.pendulum.ballIdx);
             if (pos.distanceTo(pPos) < CONFIG.PENDULUM_RADIUS + threshold) {
-                return { pos: pos.clone().sub(pPos).normalize().multiplyScalar(CONFIG.PENDULUM_RADIUS).add(pPos), type: 'static' };
+                return { 
+                    pos: pos.clone().sub(pPos).normalize().multiplyScalar(CONFIG.PENDULUM_RADIUS).add(pPos), 
+                    type: 'point', 
+                    targetIdx: this.pendulum.ballIdx 
+                };
             }
         }
         for (const rope of this.ropes) {
@@ -213,7 +217,8 @@ export class WebPhysics {
         // 1. Anchor Particle
         const idxA = this.allocParticle();
         indices.push(idxA);
-        const invMassA = (anchor.type !== 'rope') ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS);
+        // If attaching to a dynamic point (pendulum), it shouldn't be static (0 mass)
+        const invMassA = (anchor.type === 'static') ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS);
         this.setParticle(idxA, anchor.pos, invMassA);
 
         // 2. Mouse/Tail Particle
@@ -223,6 +228,7 @@ export class WebPhysics {
 
         // Attachment if needed
         if (anchor.type === 'rope') this.addAttachment(idxA, anchor.aIdx, anchor.bIdx, anchor.t);
+        if (anchor.type === 'point') this.addAttachment(idxA, anchor.targetIdx, anchor.targetIdx, 0.0);
 
         // Constraint between them
         const cIdx = this.allocConstraint();
@@ -373,13 +379,24 @@ export class WebPhysics {
             const px = this.particles[ball.idx * 8], py = this.particles[ball.idx * 8 + 1];
             ball.mesh.position.set(px!, py!, -0.1);
         }
+        if (this.pendulum) {
+            const bPos = this.getParticlePos(this.pendulum.ballIdx);
+            const pPos = this.getParticlePos(this.pendulum.pivotIdx);
+            this.pendulum.mesh.position.set(bPos.x, bPos.y, -0.1);
+            const armAttr = this.pendulum.arm.geometry.getAttribute('position');
+            armAttr.setXYZ(0, pPos.x, pPos.y, -0.2);
+            armAttr.setXYZ(1, bPos.x, bPos.y, -0.2);
+            armAttr.needsUpdate = true;
+        }
     }
 
     pinActiveRope(rope: any, anchor: any) {
         const lastIdx = rope.indices[rope.indices.length - 1];
         // Fix the last particle position to the anchor
         this.setParticle(lastIdx, anchor.pos, anchor.type === 'static' ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS));
-        if (anchor.type !== 'static') this.addAttachment(lastIdx, anchor.aIdx, anchor.bIdx, anchor.t);
+        
+        if (anchor.type === 'rope') this.addAttachment(lastIdx, anchor.aIdx, anchor.bIdx, anchor.t);
+        if (anchor.type === 'point') this.addAttachment(lastIdx, anchor.targetIdx, anchor.targetIdx, 0.0);
         
         // Finalize rope state
         rope.mesh.material.color.set(0x00ffff);
