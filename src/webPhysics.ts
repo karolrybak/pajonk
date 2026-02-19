@@ -1,62 +1,46 @@
 import * as THREE from 'three';
 
-// Physics Configuration
 export const CONFIG = {
-    SEGMENT_LENGTH: 0.1,        // Długość spoczynkowa pojedynczego segmentu liny [m]
-    ROPE_NODE_MASS: 0.1,        // Masa pojedynczego węzła liny [kg]
-    ROPE_COMPLIANCE: 0.00001,   // Podatność wiązań (0 = idealnie sztywna, >0 = elastyczna)
-    VELOCITY_DAMPING: 0.992,    // Tłumienie prędkości (0.9-0.999) - symulacja oporu powietrza
-    GRAVITY: -15.0,             // Przyspieszenie grawitacyjne (oś Y) [m/s^2]
-    PENDULUM_RADIUS: 1.2,       // Promień ruchomej kuli [m]
-    PENDULUM_LENGTH: 4.0        // Długość ramienia wahadła [m]
+    SEGMENT_LENGTH: 0.08,
+    ROPE_NODE_MASS: 1.0,
+    ROPE_COMPLIANCE: 0.00001,
+    VELOCITY_DAMPING: 0.9995,
+    GRAVITY: -40.0
 };
 
 const MAX_PARTICLES = 16384;
 const MAX_CONSTRAINTS = 16384;
 const MAX_ATTACHMENTS = 4096;
+const MAX_OBSTACLES = 256;
 
 export class WebPhysics {
-    renderer: any;
-    scene: THREE.Scene;
-    bounds: { width: number; height: number };
-    ready: boolean = false;
-
+    renderer: any; scene: THREE.Scene; bounds: { width: number; height: number }; ready: boolean = false; paused: boolean = false;
     particles = new Float32Array(MAX_PARTICLES * 8);
+    particleActive = new Uint8Array(MAX_PARTICLES);
     distConstraints = new Float32Array(MAX_CONSTRAINTS * 4);
+    constraintVisible = new Uint8Array(MAX_CONSTRAINTS);
     attachments = new Float32Array(MAX_ATTACHMENTS * 4);
+    obstacles = new Float32Array(MAX_OBSTACLES * 8);
 
-    numParticles = 0;
-    numDistConstraints = 0;
-    numAttachments = 0;
-    ropes: any[] = [];
-    balls: any[] = [];
-    activeRope: any = null;
-    pendulum: any = null;
-
-    dirtyParticles: Set<number> = new Set();
-    freeParticleIndices: number[] = [];
-    freeConstraintIndices: number[] = [];
+    numParticles = 0; numDistConstraints = 0; numAttachments = 0; numObstacles = 0;
+    ropes: any[] = []; balls: any[] = []; activeRope: any = null;
+    dirtyParticles = new Set<number>(); freeParticleIndices: number[] = []; freeConstraintIndices: number[] = [];
 
     device: GPUDevice | null = null;
-    particleBuffer: GPUBuffer | null = null;
-    distConstraintBuffer: GPUBuffer | null = null;
-    attachmentBuffer: GPUBuffer | null = null;
-    paramsBuffer0: GPUBuffer | null = null;
-    paramsBuffer1: GPUBuffer | null = null;
-    stagingBuffer: GPUBuffer | null = null;
-    bindGroup0: GPUBindGroup | null = null;
-    bindGroup1: GPUBindGroup | null = null;
+    particleBuffer: GPUBuffer | null = null; distConstraintBuffer: GPUBuffer | null = null;
+    attachmentBuffer: GPUBuffer | null = null; obstacleBuffer: GPUBuffer | null = null;
+    paramsBuffer0: GPUBuffer | null = null; paramsBuffer1: GPUBuffer | null = null; stagingBuffer: GPUBuffer | null = null;
+    bindGroup0: GPUBindGroup | null = null; bindGroup1: GPUBindGroup | null = null;
+    pipelines: Record<string, GPUComputePipeline> = {}; isReadingBack = false;
 
-    pipelines: Record<string, GPUComputePipeline> = {};
-    isReadingBack = false;
+    dragParticleIdx: number = -1;
+    constraintLines: THREE.LineSegments | null = null;
 
     constructor(renderer: any, scene: THREE.Scene, bounds: { width: number; height: number }) {
-        this.renderer = renderer;
-        this.scene = scene;
-        this.bounds = bounds;
+        this.renderer = renderer; this.scene = scene; this.bounds = bounds;
     }
 
-    async init(): Promise<void> {
+    async init() {
         const device = this.renderer.device || this.renderer.backend?.device;
         if (!device) throw new Error('WebGPU device not found');
         this.device = device;
@@ -67,11 +51,10 @@ export class WebPhysics {
         this.particleBuffer = device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
         this.distConstraintBuffer = device.createBuffer({ size: this.distConstraints.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.attachmentBuffer = device.createBuffer({ size: this.attachments.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        this.obstacleBuffer = device.createBuffer({ size: this.obstacles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
-        const paramsSize = 80;
-        this.paramsBuffer0 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        this.paramsBuffer1 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
+        this.paramsBuffer0 = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        this.paramsBuffer1 = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         this.stagingBuffer = device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
 
         const bgl = device.createBindGroupLayout({
@@ -79,7 +62,8 @@ export class WebPhysics {
                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                 { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                 { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } }
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+                { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }
             ]
         });
 
@@ -89,380 +73,361 @@ export class WebPhysics {
                 { binding: 0, resource: { buffer: this.particleBuffer! } },
                 { binding: 1, resource: { buffer: this.distConstraintBuffer! } },
                 { binding: 2, resource: { buffer: this.attachmentBuffer! } },
-                { binding: 3, resource: { buffer: pBuf } }
+                { binding: 3, resource: { buffer: pBuf } },
+                { binding: 4, resource: { buffer: this.obstacleBuffer! } }
             ]
         });
 
-        this.bindGroup0 = createBG(this.paramsBuffer0!);
-        this.bindGroup1 = createBG(this.paramsBuffer1!);
-
+        this.bindGroup0 = createBG(this.paramsBuffer0!); this.bindGroup1 = createBG(this.paramsBuffer1!);
         const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
         const createPipe = (entry: string) => device.createComputePipeline({ layout, compute: { module: shaderModule, entryPoint: entry } });
 
-        this.pipelines.integrate = createPipe('integrate');
-        this.pipelines.solveDistance = createPipe('solveDistance');
-        this.pipelines.solveAttachments = createPipe('solveAttachments');
-        this.pipelines.solveParticleCollisions = createPipe('solveParticleCollisions');
-        this.pipelines.solveCollisions = createPipe('solveCollisions');
-
-        this.setupPendulum();
+        ['integrate', 'solveDistance', 'solveAttachments', 'solveParticleCollisions', 'solveCollisions'].forEach(e => this.pipelines[e] = createPipe(e));
+        
+        const constraintGeo = new THREE.BufferGeometry();
+        constraintGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_CONSTRAINTS * 6), 3));
+        this.constraintLines = new THREE.LineSegments(constraintGeo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
+        this.scene.add(this.constraintLines);
+        
         this.ready = true;
     }
 
-    setupPendulum() {
-        const pivotIdx = this.allocParticle();
-        const ballIdx = this.allocParticle();
-        const pivotPos = new THREE.Vector2(-6, 4);
-        const ballPos = pivotPos.clone().add(new THREE.Vector2(CONFIG.PENDULUM_LENGTH, 0));
-
-        this.setParticle(pivotIdx, pivotPos, 0.0); // Static pivot
-        this.setParticle(ballIdx, ballPos, 0.2); // Heavy ball (invMass 0.2 = 5kg)
-        this.particles[ballIdx * 8 + 7] = CONFIG.PENDULUM_RADIUS;
-
-        const cIdx = this.allocConstraint();
-        this.setDistConstraint(cIdx, pivotIdx, ballIdx, CONFIG.PENDULUM_LENGTH, 0.0);
-
-        const geo = new THREE.CircleGeometry(CONFIG.PENDULUM_RADIUS, 32);
-        const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x5555ff }));
-        const armGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
-        const arm = new THREE.Line(armGeo, new THREE.LineBasicMaterial({ color: 0x444444 }));
+    addObstacle(pos: THREE.Vector2, size: THREE.Vector2, type: number) {
+        if (this.numObstacles >= MAX_OBSTACLES) return;
+        const off = this.numObstacles * 8;
+        this.obstacles[off] = pos.x; this.obstacles[off+1] = pos.y;
+        this.obstacles[off+2] = size.x; this.obstacles[off+3] = size.y;
+        const uv = new Uint32Array(this.obstacles.buffer);
+        uv[off+4] = type;
+        this.numObstacles++;
         
-        this.scene.add(mesh, arm);
-        this.pendulum = { pivotIdx, ballIdx, mesh, arm };
-        this.syncGPU();
-    }
-
-    allocParticle(): number {
-        if (this.freeParticleIndices.length > 0) return this.freeParticleIndices.pop()!;
-        if (this.numParticles >= MAX_PARTICLES) return -1;
-        return this.numParticles++;
-    }
-
-    freeParticle(idx: number) {
-        this.freeParticleIndices.push(idx);
-        // Move to 0,0 and make static to stop processing in shader (mostly)
-        this.setParticle(idx, new THREE.Vector2(0, 0), 0.0);
-    }
-
-    allocConstraint(): number {
-        if (this.freeConstraintIndices.length > 0) return this.freeConstraintIndices.pop()!;
-        if (this.numDistConstraints >= MAX_CONSTRAINTS) return -1;
-        return this.numDistConstraints++;
-    }
-
-    freeConstraint(idx: number) {
-        this.freeConstraintIndices.push(idx);
-        this.setDistConstraint(idx, 0, 0, 0, 0);
-    }
-
-    spawnBall(pos: THREE.Vector2) {
-        const idx = this.allocParticle();
-        if (idx === -1) return;
-
-        const radius = 0.3 + Math.random() * 0.5;
-        this.setParticle(idx, pos, 0.5 / (radius * radius));
-        this.particles[idx * 8 + 7] = radius;
-
-        const geo = new THREE.CircleGeometry(radius, 16);
-        const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x00ff88, transparent: true, opacity: 0.9 }));
+        const mat = new THREE.MeshBasicMaterial({ color: 0x222222 });
+        const geo = type === 0 ? new THREE.CircleGeometry(size.x, 32) : new THREE.BoxGeometry(size.x, size.y, 0.1);
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(pos.x, pos.y, -0.5);
         this.scene.add(mesh);
-        this.balls.push({ idx, mesh });
-        this.syncGPU();
+        this.device?.queue.writeBuffer(this.obstacleBuffer!, 0, this.obstacles);
     }
 
-    findAnchor(pos: THREE.Vector2): any | null {
-        const bx = 11.8, by = 6.8, threshold = 0.5;
-        if (Math.abs(pos.x) > bx - threshold || Math.abs(pos.y) > by - threshold) {
-            const snapped = pos.clone();
-            if (bx - Math.abs(pos.x) < threshold) snapped.x = Math.sign(pos.x) * bx;
-            if (by - Math.abs(pos.y) < threshold) snapped.y = Math.sign(pos.y) * by;
-            return { pos: snapped, type: 'static' };
-        }
-        const circlePos = new THREE.Vector2(4, 2);
-        if (pos.distanceTo(circlePos) < 1.5 + threshold) {
-            return { pos: pos.clone().sub(circlePos).normalize().multiplyScalar(1.5).add(circlePos), type: 'static' };
-        }
-        if (this.pendulum) {
-            const pPos = this.getParticlePos(this.pendulum.ballIdx);
-            if (pos.distanceTo(pPos) < CONFIG.PENDULUM_RADIUS + threshold) {
-                return { 
-                    pos: pos.clone().sub(pPos).normalize().multiplyScalar(CONFIG.PENDULUM_RADIUS).add(pPos), 
-                    type: 'point', 
-                    targetIdx: this.pendulum.ballIdx 
-                };
-            }
-        }
-        for (const rope of this.ropes) {
-            if (rope === this.activeRope) continue;
-            for (let i = 0; i < rope.segments - 1; i++) {
-                const p1 = this.getParticlePos(rope.indices[i]!);
-                const p2 = this.getParticlePos(rope.indices[i + 1]!);
-                const line = p2.clone().sub(p1), lenSq = line.lengthSq();
-                const t = Math.max(0, Math.min(1, pos.clone().sub(p1).dot(line) / lenSq));
-                const proj = p1.clone().add(line.multiplyScalar(t));
-                if (pos.distanceTo(proj) < 0.25) return { pos: proj, type: 'rope', aIdx: rope.indices[i], bIdx: rope.indices[i + 1], t };
-            }
-        }
-        return null;
+    allocParticle() { 
+        if (this.numParticles >= MAX_PARTICLES && this.freeParticleIndices.length === 0) return -1;
+        const idx = this.freeParticleIndices.length > 0 ? this.freeParticleIndices.pop()! : this.numParticles++; 
+        this.particleActive[idx] = 1;
+        return idx;
     }
-
-    getParticlePos(i: number) { return new THREE.Vector2(this.particles[i * 8], this.particles[i * 8 + 1]); }
-
-    createRope(anchor: any): any {
-        // Start with just 2 particles: Anchor -> Mouse
-        const segmentLength = CONFIG.SEGMENT_LENGTH;
-        const indices: number[] = [];
-        const constraintIndices: number[] = [];
-        
-        // 1. Anchor Particle
-        const idxA = this.allocParticle();
-        indices.push(idxA);
-        // If attaching to a dynamic point (pendulum), it shouldn't be static (0 mass)
-        const invMassA = (anchor.type === 'static') ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS);
-        this.setParticle(idxA, anchor.pos, invMassA);
-
-        // 2. Mouse/Tail Particle
-        const idxB = this.allocParticle();
-        indices.push(idxB);
-        this.setParticle(idxB, anchor.pos, 1.0 / CONFIG.ROPE_NODE_MASS);
-
-        // Attachment if needed
-        if (anchor.type === 'rope') this.addAttachment(idxA, anchor.aIdx, anchor.bIdx, anchor.t);
-        if (anchor.type === 'point') this.addAttachment(idxA, anchor.targetIdx, anchor.targetIdx, 0.0);
-
-        // Constraint between them
-        const cIdx = this.allocConstraint();
-        constraintIndices.push(cIdx);
-        this.setDistConstraint(cIdx, idxA, idxB, segmentLength, CONFIG.ROPE_COMPLIANCE);
-
-        // Mesh (allocate max size upfront to avoid constant recreation)
-        const maxSegments = 200;
-        const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxSegments * 3), 3));
-        // Initialize geo to hide unused segments
-        geo.setDrawRange(0, 2);
-
-        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
-        const pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffaa00, size: 0.08 }));
-        
-        this.scene.add(line, pts);
-        
-        const rope = {
-            indices,
-            constraintIndices,
-            mesh: line,
-            pointsMesh: pts,
-            segments: 1,
-            segmentLength: segmentLength
-        };
-        
-        this.ropes.push(rope);
-        this.activeRope = rope;
-        this.syncGPU();
-        return rope;
+    freeParticle(idx: number) { 
+        this.freeParticleIndices.push(idx); 
+        this.particleActive[idx] = 0;
+        this.setParticle(idx, new THREE.Vector2(0,0), 0); 
     }
-
-    addAttachment(pIdx: number, aIdx: number, bIdx: number, t: number) {
-        const off = this.numAttachments * 4, uv = new Uint32Array(this.attachments.buffer);
-        uv[off] = pIdx; uv[off + 1] = aIdx; uv[off + 2] = bIdx; this.attachments[off + 3] = t;
-        this.numAttachments++; this.particles[pIdx * 8 + 6] = 1.0;
+    allocConstraint() { 
+        if (this.numDistConstraints >= MAX_CONSTRAINTS && this.freeConstraintIndices.length === 0) return -1;
+        const idx = this.freeConstraintIndices.length > 0 ? this.freeConstraintIndices.pop()! : this.numDistConstraints++; 
+        this.constraintVisible[idx] = 1;
+        return idx;
     }
+    freeConstraint(idx: number) { this.freeConstraintIndices.push(idx); this.setDistConstraint(idx, 0,0,0,0); }
 
-    setParticle(i: number, pos: THREE.Vector2, invMass: number): void {
-        const off = i * 8;
-        this.particles[off] = pos.x; this.particles[off + 1] = pos.y;
-        this.particles[off + 2] = pos.x; this.particles[off + 3] = pos.y;
-        this.particles[off + 4] = 0; this.particles[off + 5] = 0;
-        this.particles[off + 6] = invMass; this.particles[off + 7] = 0.04;
+    setParticle(i: number, pos: THREE.Vector2, invMass: number) {
+        const off = i * 8; 
+        this.particles[off] = pos.x; 
+        this.particles[off+1] = pos.y; 
+        this.particles[off+2] = pos.x; 
+        this.particles[off+3] = pos.y; 
+        this.particles[off+4] = 0.0; // isFree defaults to false
+        this.particles[off+5] = 0.0; 
+        this.particles[off+6] = invMass; 
+        this.particles[off+7] = 0.04; 
+        this.dirtyParticles.add(i);
+    }
+    
+    setParticleFree(i: number, isFree: boolean) {
+        this.particles[i * 8 + 4] = isFree ? 1.0 : 0.0;
         this.dirtyParticles.add(i);
     }
 
-    setDistConstraint(i: number, a: number, b: number, len: number, comp: number): void {
-        const off = i * 4, uv = new Uint32Array(this.distConstraints.buffer);
-        uv[off] = a; uv[off + 1] = b; this.distConstraints[off + 2] = len; this.distConstraints[off + 3] = comp;
+    setParticlePos(i: number, pos: THREE.Vector2) {
+        const off = i * 8; this.particles[off] = pos.x; this.particles[off+1] = pos.y; this.particles[off+2] = pos.x; this.particles[off+3] = pos.y; 
+        this.dirtyParticles.add(i);
     }
-
-    syncGPU(): void {
+    setDistConstraint(i: number, a: number, b: number, len: number, comp: number) {
+        const off = i * 4; const uv = new Uint32Array(this.distConstraints.buffer); uv[off] = a; uv[off+1] = b; this.distConstraints[off+2] = len; this.distConstraints[off+3] = comp;
+    }
+    addAttachment(pIdx: number, aIdx: number, bIdx: number, t: number) {
+        const off = this.numAttachments * 4; const uv = new Uint32Array(this.attachments.buffer); uv[off] = pIdx; uv[off+1] = aIdx; uv[off+2] = bIdx; this.attachments[off+3] = t; this.numAttachments++;
+    }
+    syncGPU() { 
         this.device?.queue.writeBuffer(this.particleBuffer!, 0, this.particles);
         this.device?.queue.writeBuffer(this.distConstraintBuffer!, 0, this.distConstraints);
         this.device?.queue.writeBuffer(this.attachmentBuffer!, 0, this.attachments);
     }
 
-    update(mousePos: THREE.Vector2): void {
+    update(mousePos: THREE.Vector2) {
         if (!this.ready || this.isReadingBack) return;
+        const dt = 1/60, subs = 12;
+        
+        const activeIdx = this.dragParticleIdx !== -1 ? this.dragParticleIdx : (this.activeRope ? this.activeRope.indices[this.activeRope.indices.length-1] : -1);
 
-
-
-        const substeps = 12, constraintIters = 6, dt = 1.0 / 60.0;
-        const fill = (phase: number) => {
-            const b = new ArrayBuffer(80), f = new Float32Array(b), u = new Uint32Array(b), i = new Int32Array(b);
-            f[0] = dt; 
-            f[1] = CONFIG.GRAVITY; 
-            u[2] = this.numParticles; 
-            u[3] = this.numDistConstraints; 
-            u[4] = substeps; 
-            u[5] = phase; 
-            f[6] = mousePos.x; 
-            f[7] = mousePos.y;
-            i[8] = this.activeRope ? this.activeRope.indices[this.activeRope.indices.length - 1] : -1;
-            u[9] = this.numAttachments;
-            f[10] = CONFIG.VELOCITY_DAMPING;
-            i[11] = this.pendulum ? this.pendulum.ballIdx : -1;
+        const fill = (ph: number) => {
+            const b = new ArrayBuffer(96), f = new Float32Array(b), u = new Uint32Array(b), i = new Int32Array(b);
+            f[0] = dt; f[1] = CONFIG.GRAVITY; u[2] = this.numParticles; u[3] = this.numDistConstraints; u[4] = subs; u[5] = ph; f[6] = mousePos.x; f[7] = mousePos.y; i[8] = activeIdx; u[9] = this.numAttachments; f[10] = CONFIG.VELOCITY_DAMPING; u[11] = this.paused ? 1 : 0; u[12] = this.numObstacles;
             return b;
         };
-        this.device?.queue.writeBuffer(this.paramsBuffer0!, 0, fill(0));
-        this.device?.queue.writeBuffer(this.paramsBuffer1!, 0, fill(1));
-
-        const encoder = this.device!.createCommandEncoder();
-        for (let s = 0; s < substeps; s++) {
-            const intPass = encoder.beginComputePass();
-            intPass.setBindGroup(0, this.bindGroup0!); intPass.setPipeline(this.pipelines.integrate!); intPass.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1); intPass.end();
-
-            for (let i = 0; i < constraintIters; i++) {
-                const p0 = encoder.beginComputePass(); p0.setBindGroup(0, this.bindGroup0!); p0.setPipeline(this.pipelines.solveDistance!); p0.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1); p0.end();
-                const p1 = encoder.beginComputePass(); p1.setBindGroup(0, this.bindGroup1!); p1.setPipeline(this.pipelines.solveDistance!); p1.dispatchWorkgroups(Math.ceil(this.numDistConstraints / 64) || 1); p1.end();
-                const ap = encoder.beginComputePass(); ap.setBindGroup(0, this.bindGroup0!); ap.setPipeline(this.pipelines.solveAttachments!); ap.dispatchWorkgroups(Math.ceil(this.numAttachments / 64) || 1); ap.end();
+        this.device?.queue.writeBuffer(this.paramsBuffer0!, 0, fill(0)); this.device?.queue.writeBuffer(this.paramsBuffer1!, 0, fill(1));
+        const enc = this.device!.createCommandEncoder();
+        
+        for (let s = 0; s < subs; s++) {
+            const p1 = enc.beginComputePass(); p1.setBindGroup(0, this.bindGroup0!); p1.setPipeline(this.pipelines.integrate!); p1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); p1.end();
+            for (let i = 0; i < 6; i++) {
+                const d0 = enc.beginComputePass(); d0.setBindGroup(0, this.bindGroup0!); d0.setPipeline(this.pipelines.solveDistance!); d0.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d0.end();
+                const d1 = enc.beginComputePass(); d1.setBindGroup(0, this.bindGroup1!); d1.setPipeline(this.pipelines.solveDistance!); d1.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d1.end();
+                const at = enc.beginComputePass(); at.setBindGroup(0, this.bindGroup0!); at.setPipeline(this.pipelines.solveAttachments!); at.dispatchWorkgroups(Math.ceil(this.numAttachments/64)); at.end();
             }
-            // Solve Inter-particle collisions (Balls vs Ropes, Balls vs Balls)
-            const ppCol = encoder.beginComputePass(); ppCol.setBindGroup(0, this.bindGroup0!); ppCol.setPipeline(this.pipelines.solveParticleCollisions!); ppCol.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1); ppCol.end();
-
-            const col = encoder.beginComputePass(); col.setBindGroup(0, this.bindGroup0!); col.setPipeline(this.pipelines.solveCollisions!); col.dispatchWorkgroups(Math.ceil(this.numParticles / 64) || 1); col.end();
+            const c0 = enc.beginComputePass(); c0.setBindGroup(0, this.bindGroup0!); c0.setPipeline(this.pipelines.solveParticleCollisions!); c0.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c0.end();
+            const c1 = enc.beginComputePass(); c1.setBindGroup(0, this.bindGroup0!); c1.setPipeline(this.pipelines.solveCollisions!); c1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c1.end();
         }
-        encoder.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
-        this.device?.queue.submit([encoder.finish()]);
+        
+        enc.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
+        this.device?.queue.submit([enc.finish()]);
         this.readBackAndVisualize();
     }
 
     readBackAndVisualize() {
         if (!this.stagingBuffer || this.isReadingBack) return;
         this.isReadingBack = true;
-
         this.stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-            const range = this.stagingBuffer!.getMappedRange();
-            const gpuData = new Float32Array(range);
-            
-            // Backup dirty particles (CPU is authoritative for initialization)
-            const backups: {i: number, data: Float32Array}[] = [];
-            this.dirtyParticles.forEach(i => {
-                backups.push({ i, data: this.particles.slice(i*8, i*8+8) });
-            });
-
-            this.particles.set(gpuData);
-
-            // Restore backups
-            for(const b of backups) {
-                this.particles.set(b.data, b.i*8);
-            }
-            this.dirtyParticles.clear();
-
-            this.stagingBuffer!.unmap();
-            this.isReadingBack = false;
-            this.updateVisuals();
-        }).catch(() => {
-            this.isReadingBack = false;
-        });
+            const data = new Float32Array(this.stagingBuffer!.getMappedRange());
+            const dirty = Array.from(this.dirtyParticles).map(i => ({i, data: this.particles.slice(i*8, i*8+8)}));
+            this.particles.set(data); dirty.forEach(b => this.particles.set(b.data, b.i*8)); this.dirtyParticles.clear();
+            this.stagingBuffer!.unmap(); this.isReadingBack = false; this.updateVisuals();
+        }).catch(() => this.isReadingBack = false);
     }
 
     updateVisuals() {
-        for (const rope of this.ropes) {
-            const attr = rope.mesh.geometry.getAttribute('position');
-            // Update draw range to match current topology
-            rope.mesh.geometry.setDrawRange(0, rope.indices.length);
-            if (rope.pointsMesh) rope.pointsMesh.geometry.setDrawRange(0, rope.indices.length);
-
-            for (let i = 0; i < rope.indices.length; i++) {
-                const idx = rope.indices[i];
-                attr.setXYZ(i, this.particles[idx * 8]!, this.particles[idx * 8 + 1]!, 0);
+        if (this.constraintLines) {
+            const posAttr = this.constraintLines.geometry.getAttribute('position');
+            let drawCount = 0;
+            const uv = new Uint32Array(this.distConstraints.buffer);
+            for(let i=0; i<this.numDistConstraints; i++) {
+                if (this.constraintVisible[i] === 0) continue;
+                const a = uv[i*4], b = uv[i*4+1];
+                if (a === b) continue;
+                posAttr.setXYZ(drawCount*2, this.particles[a*8], this.particles[a*8+1], 0);
+                posAttr.setXYZ(drawCount*2+1, this.particles[b*8], this.particles[b*8+1], 0);
+                drawCount++;
             }
-            attr.needsUpdate = true;
+            this.constraintLines.geometry.setDrawRange(0, drawCount*2);
+            posAttr.needsUpdate = true;
         }
-        for (const ball of this.balls) {
-            const px = this.particles[ball.idx * 8], py = this.particles[ball.idx * 8 + 1];
-            ball.mesh.position.set(px!, py!, -0.1);
+
+        this.balls.forEach(b => b.mesh.position.set(this.particles[b.idx*8], this.particles[b.idx*8+1], -0.1));
+    }
+
+    getParticlePos(i: number) { return new THREE.Vector2(this.particles[i*8], this.particles[i*8+1]); }
+    
+    getNearestParticle(pos: THREE.Vector2, maxDist: number) {
+        let nearest = -1;
+        let minDistSq = maxDist * maxDist;
+        for (let i = 0; i < this.numParticles; i++) {
+            if (!this.particleActive[i]) continue;
+            const px = this.particles[i*8], py = this.particles[i*8+1];
+            const distSq = (px - pos.x)**2 + (py - pos.y)**2;
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+                nearest = i;
+            }
         }
-        if (this.pendulum) {
-            const bPos = this.getParticlePos(this.pendulum.ballIdx);
-            const pPos = this.getParticlePos(this.pendulum.pivotIdx);
-            this.pendulum.mesh.position.set(bPos.x, bPos.y, -0.1);
-            const armAttr = this.pendulum.arm.geometry.getAttribute('position');
-            armAttr.setXYZ(0, pPos.x, pPos.y, -0.2);
-            armAttr.setXYZ(1, bPos.x, bPos.y, -0.2);
-            armAttr.needsUpdate = true;
+        return nearest;
+    }
+
+    findIntersectingConstraint(pos: THREE.Vector2, radius: number) {
+        const uv = new Uint32Array(this.distConstraints.buffer);
+        let closest = -1;
+        let minDist = radius;
+        for(let i=0; i<this.numDistConstraints; i++) {
+            if (this.constraintVisible[i] === 0) continue;
+            const a = uv[i*4], b = uv[i*4+1];
+            if (a === b) continue;
+            const pA = new THREE.Vector2(this.particles[a*8], this.particles[a*8+1]);
+            const pB = new THREE.Vector2(this.particles[b*8], this.particles[b*8+1]);
+            const l2 = pA.distanceToSquared(pB);
+            if (l2 === 0) continue;
+            let t = ((pos.x - pA.x) * (pB.x - pA.x) + (pos.y - pA.y) * (pB.y - pA.y)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            const proj = new THREE.Vector2(pA.x + t * (pB.x - pA.x), pA.y + t * (pB.y - pA.y));
+            const d = pos.distanceTo(proj);
+            if (d < minDist) {
+                minDist = d;
+                closest = i;
+            }
         }
+        return closest;
+    }
+
+    createJoint(a: number, b: number) {
+        const cIdx = this.allocConstraint();
+        if (cIdx === -1) return;
+        const pA = this.getParticlePos(a);
+        const pB = this.getParticlePos(b);
+        const dist = pA.distanceTo(pB);
+        this.setDistConstraint(cIdx, a, b, dist, 0.000001);
+        this.syncGPU();
+        this.updateVisuals();
+    }
+
+    findAnchor(pos: THREE.Vector2): any {
+        const bx=11.8, by=6.8, th=0.5;
+        // Check level bounds
+        if (Math.abs(pos.x)>bx-th || Math.abs(pos.y)>by-th) return { pos: pos.clone().clamp(new THREE.Vector2(-bx,-by), new THREE.Vector2(bx,by)), type: 'static' };
+        
+        // Check nearby particles (circles)
+        const pIdx = this.getNearestParticle(pos, 1.0);
+        if (pIdx !== -1) {
+            const pPos = this.getParticlePos(pIdx);
+            const radius = this.particles[pIdx*8+7];
+            const nodeRadius = 0.04;
+            const dir = pos.clone().sub(pPos);
+            if (dir.lengthSq() === 0) dir.set(1, 0);
+            dir.normalize();
+            const surfacePos = pPos.clone().add(dir.multiplyScalar(radius + nodeRadius));
+            return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
+        }
+
+        // Check static obstacles (which aren't particles)
+        for (let i = 0; i < this.numObstacles; i++) {
+            const off = i * 8;
+            const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);
+            const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);
+            const type = new Uint32Array(this.obstacles.buffer)[off+4];
+            if (type === 0) {
+                if (pos.distanceTo(obsPos) < obsSize.x + th) {
+                    const dir = pos.clone().sub(obsPos);
+                    if (dir.lengthSq() === 0) dir.set(1, 0);
+                    const surfacePos = obsPos.clone().add(dir.normalize().multiplyScalar(obsSize.x));
+                    return { pos: surfacePos, type: 'static' };
+                }
+            } else {
+                const half = obsSize.clone().multiplyScalar(0.5);
+                const d = new THREE.Vector2(Math.abs(pos.x - obsPos.x) - half.x, Math.abs(pos.y - obsPos.y) - half.y);
+                if (Math.max(d.x, d.y) < th) {
+                    const localPos = pos.clone().sub(obsPos);
+                    if (Math.abs(localPos.x) / half.x > Math.abs(localPos.y) / half.y) {
+                        localPos.x = Math.sign(localPos.x || 1) * half.x;
+                    } else {
+                        localPos.y = Math.sign(localPos.y || 1) * half.y;
+                    }
+                    return { pos: obsPos.clone().add(localPos), type: 'static' };
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    createRope(anchor: any) {
+        const idxA = this.allocParticle(); if (idxA === -1) return null;
+        const idxB = this.allocParticle(); if (idxB === -1) { this.freeParticle(idxA); return null; }
+        const cIdx = this.allocConstraint(); if (cIdx === -1) { this.freeParticle(idxA); this.freeParticle(idxB); return null; }
+        const indices = [idxA, idxB];
+        this.setParticle(idxA, anchor.pos, anchor.type==='static'?0:1/CONFIG.ROPE_NODE_MASS); 
+        this.setParticle(idxB, anchor.pos, 1/CONFIG.ROPE_NODE_MASS);
+        
+        // The active rope is free to simulate even when paused
+        this.setParticleFree(idxA, true);
+        this.setParticleFree(idxB, true);
+        
+        const rope = { indices, constraintIndices: [cIdx], anchorConstraints: [] as number[], segments: 1, segmentLength: CONFIG.SEGMENT_LENGTH };
+
+        if (anchor.type==='particle') {
+            const extraC = this.allocConstraint();
+            if (extraC !== -1) {
+                this.constraintVisible[extraC] = 0;
+                this.setDistConstraint(extraC, idxA, anchor.targetIdx, anchor.distance + 0.02, 0);
+                rope.anchorConstraints.push(extraC);
+            }
+        }
+        
+        this.setDistConstraint(cIdx, idxA, idxB, CONFIG.SEGMENT_LENGTH, CONFIG.ROPE_COMPLIANCE);
+        this.ropes.push(rope); this.activeRope = rope; this.syncGPU(); return rope;
     }
 
     pinActiveRope(rope: any, anchor: any) {
-        const lastIdx = rope.indices[rope.indices.length - 1];
-        // Fix the last particle position to the anchor
-        this.setParticle(lastIdx, anchor.pos, anchor.type === 'static' ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS));
+        const last = rope.indices[rope.indices.length-1]; 
+        this.setParticle(last, anchor.pos, anchor.type==='static'?0:1/CONFIG.ROPE_NODE_MASS);
         
-        if (anchor.type === 'rope') this.addAttachment(lastIdx, anchor.aIdx, anchor.bIdx, anchor.t);
-        if (anchor.type === 'point') this.addAttachment(lastIdx, anchor.targetIdx, anchor.targetIdx, 0.0);
+        if (anchor.type==='particle') {
+            const extraC = this.allocConstraint();
+            if (extraC !== -1) {
+                this.constraintVisible[extraC] = 0;
+                this.setDistConstraint(extraC, last, anchor.targetIdx, anchor.distance + 0.02, 0);
+                rope.anchorConstraints.push(extraC);
+            }
+        }
         
-        // Finalize rope state
-        rope.mesh.material.color.set(0x00ffff);
-        this.activeRope = null;
+        // The rope is completed, so it will freeze when paused again
+        rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));
+        
+        this.activeRope = null; 
         this.syncGPU();
     }
 
-
-
     adjustRopeLength(rope: any, delta: number) {
-        const SEG_LEN = rope.segmentLength;
-        if (delta < 0) { // Scroll Up -> Add Segment
-             if (rope.indices.length >= 200) return;
-
-             const tailIdx = rope.indices[rope.indices.length - 1];
-             const prevIdx = rope.indices[rope.indices.length - 2];
-             
-             const prevPos = new THREE.Vector2(this.particles[prevIdx * 8], this.particles[prevIdx * 8 + 1]);
-             const tailPos = new THREE.Vector2(this.particles[tailIdx * 8], this.particles[tailIdx * 8 + 1]);
-
-             const dir = tailPos.clone().sub(prevPos);
-             if (dir.lengthSq() < 0.0001) dir.set(1, 0);
-             else dir.normalize();
-
-             const newPos = prevPos.clone().add(dir.multiplyScalar(SEG_LEN));
-             
-             const newIdx = this.allocParticle();
-             if (newIdx === -1) return;
-             this.setParticle(newIdx, newPos, 1.0);
-
-             const lastCIdx = rope.constraintIndices[rope.constraintIndices.length - 1];
-             this.setDistConstraint(lastCIdx, prevIdx, newIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
-             
-             const newCIdx = this.allocConstraint();
-             if (newCIdx !== -1) {
-                rope.constraintIndices.push(newCIdx);
-                this.setDistConstraint(newCIdx, newIdx, tailIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
-             }
-
-             rope.indices.pop();
-             rope.indices.push(newIdx);
-             rope.indices.push(tailIdx);
-             rope.segments++;
-             
-             this.syncGPU();
-        } 
-        else if (delta > 0) { // Scroll Down -> Remove Segment
-            if (rope.indices.length <= 2) return;
-
-            const tailIdx = rope.indices.pop(); 
-            const removedIdx = rope.indices.pop();
-            rope.indices.push(tailIdx);
+        const SEG = CONFIG.SEGMENT_LENGTH;
+        if (delta < 0 && rope.indices.length < 500) {
+            const tail = rope.indices[rope.indices.length-1];
+            const prev = rope.indices[rope.indices.length-2];
             
-            // Recycle the particle
-            if (removedIdx !== undefined) this.freeParticle(removedIdx);
+            const tailPos = this.getParticlePos(tail);
+            const prevPos = this.getParticlePos(prev);
             
-            const removedCIdx = rope.constraintIndices.pop();
-            if (removedCIdx !== undefined) this.freeConstraint(removedCIdx);
+            const newIdx = this.allocParticle(); 
+            if (newIdx === -1) return;
+
+            const dir = tailPos.clone().sub(prevPos);
+            const dist = dir.length();
+            const step = dist > 0 ? dir.normalize().multiplyScalar(Math.min(dist * 0.5, SEG)) : new THREE.Vector2(SEG, 0);
             
-            const lastCIdx = rope.constraintIndices[rope.constraintIndices.length - 1];
-            const newLastNodeIdx = rope.indices[rope.indices.length - 2];
+            this.setParticle(newIdx, prevPos.clone().add(step), 1/CONFIG.ROPE_NODE_MASS);
+            this.setParticleFree(newIdx, true);
             
-            this.setDistConstraint(lastCIdx, newLastNodeIdx, tailIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
+            const lastC = rope.constraintIndices[rope.constraintIndices.length-1]; 
+            this.setDistConstraint(lastC, prev, newIdx, SEG, CONFIG.ROPE_COMPLIANCE);
             
-            rope.segments--;
+            const newC = this.allocConstraint(); 
+            if (newC === -1) {
+                this.freeParticle(newIdx);
+                this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE);
+                return;
+            }
+            rope.constraintIndices.push(newC); 
+            this.setDistConstraint(newC, newIdx, tail, SEG, CONFIG.ROPE_COMPLIANCE);
+            
+            rope.indices.splice(rope.indices.length - 1, 0, newIdx);
+            rope.segments++; 
+            this.syncGPU();
+        } else if (delta > 0 && rope.indices.length > 2) {
+            const tail = rope.indices.pop()!; 
+            const rem = rope.indices.pop()!; 
+            rope.indices.push(tail); 
+            this.freeParticle(rem);
+            
+            const remC = rope.constraintIndices.pop()!; 
+            this.freeConstraint(remC);
+            
+            const lastC = rope.constraintIndices[rope.constraintIndices.length-1]; 
+            const prev = rope.indices[rope.indices.length-2];
+            this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE); 
+            rope.segments--; 
             this.syncGPU();
         }
+    }
+
+    spawnBall(pos: THREE.Vector2, bodyType: 'dynamic' | 'static' | 'kinematic' = 'dynamic', radius = 0.5, mass = 10.0) {
+        const idx = this.allocParticle(); if (idx===-1) return;
+        const invMass = bodyType === 'dynamic' ? 1.0 / mass : 0;
+        this.setParticle(idx, pos, invMass); this.particles[idx*8+7] = radius;
+        const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), new THREE.MeshBasicMaterial({ color: bodyType === 'dynamic' ? 0x00ff88 : 0x888888 }));
+        this.scene.add(mesh); this.balls.push({ idx, mesh, type: bodyType }); this.syncGPU();
+        this.updateVisuals();
     }
 }

@@ -3,22 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Spider Web Physics Prototype</title>
+    <title>Web-Builder Editor</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #111; color: white; font-family: sans-serif; }
-        #ui { position: absolute; top: 10px; left: 10px; pointer-events: none; z-index: 10; }
-        .warning { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: #333; padding: 20px; border-radius: 8px; text-align: center; z-index: 100; }
-        .warning.show { display: block; }
+        body { margin: 0; overflow: hidden; background: #000; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #root { width: 100vw; height: 100vh; }
     </style>
 </head>
 <body>
-    <div id="ui">
-        WASD: Move on walls | Space: Jump | E: Pin | <span id="fps">0</span> FPS | <span id="state">START</span>
-    </div>
-    <div id="warning" class="warning">
-        <h2>WebGPU niedostępna</h2>
-        <p>Wymagany Chrome/Edge 113+, Opera 99+ lub Firefox Nightly</p>
-    </div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
 </body>
 </html>
