@@ -103,7 +103,6 @@ fn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = particles[att.pIdx].pos;
     let a = particles[att.aIdx].pos;
     let b = particles[att.bIdx].pos;
-    
     let link_target = mix(a, b, att.t);
     let delta = p - link_target;
     let dist = length(delta);
@@ -112,20 +111,44 @@ fn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {
     let wp = particles[att.pIdx].invMass;
     let wa = particles[att.aIdx].invMass;
     let wb = particles[att.bIdx].invMass;
-    
-    // Barycentric inverse mass approximation for segment interaction
     let wSegment = wa * (1.0 - att.t) + wb * att.t;
     let wSum = wp + wSegment;
     if (wSum <= 0.0) { return; }
 
-    let h = params.dt / f32(params.substeps);
-    let alpha = 0.0; // Rigid attachment
-    let dLambda = -dist / (wSum + alpha);
+    let dLambda = -dist / wSum;
     let correction = normalize(delta) * dLambda;
-
     if (wp > 0.0) { particles[att.pIdx].pos += correction * wp; }
     if (wa > 0.0) { particles[att.aIdx].pos -= correction * wa * (1.0 - att.t); }
     if (wb > 0.0) { particles[att.bIdx].pos -= correction * wb * att.t; }
+}
+
+@compute @workgroup_size(64)
+fn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= params.numParticles) { return; }
+    
+    var pi = particles[i];
+    if (pi.invMass <= 0.0) { return; }
+
+    for (var j: u32 = 0u; j < params.numParticles; j++) {
+        if (i == j) { continue; }
+        let pj = particles[j];
+        
+        let delta = pi.pos - pj.pos;
+        let dist = length(delta);
+        let minDist = pi.radius + pj.radius;
+        
+        if (dist < minDist && dist > 0.0001) {
+            let n = delta / dist;
+            let overlap = minDist - dist;
+            let wSum = pi.invMass + pj.invMass;
+            if (wSum > 0.0) {
+                // Jacobi style damping for inter-particle stability
+                pi.pos += n * (overlap / wSum) * pi.invMass * 0.5;
+            }
+        }
+    }
+    particles[i].pos = pi.pos;
 }
 
 @compute @workgroup_size(64)
@@ -137,10 +160,10 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let bx = 11.8;
     let by = 6.8;
-    if (p.pos.x > bx) { p.pos.x = bx; }
-    if (p.pos.x < -bx) { p.pos.x = -bx; }
-    if (p.pos.y > by) { p.pos.y = by; }
-    if (p.pos.y < -by) { p.pos.y = -by; }
+    if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; }
+    if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; }
+    if (p.pos.y > by - p.radius) { p.pos.y = by - p.radius; }
+    if (p.pos.y < -by + p.radius) { p.pos.y = -by + p.radius; }
 
     let circlePos = vec2<f32>(4.0, 2.0);
     let circleRad = 1.5;

@@ -39,6 +39,7 @@ async function init() {
     window.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);
     window.addEventListener('wheel', onWheel);
+    window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', () => renderer.setSize(window.innerWidth, window.innerHeight));
 
     animate();
@@ -73,8 +74,15 @@ function onMouseMove(e: MouseEvent) {
 
 function onWheel(e: WheelEvent) {
     if (activeRope) {
-        const delta = e.deltaY * 0.002;
+        // Standardizing wheel delta
+        const delta = e.deltaY / 100;
         physics.adjustRopeLength(activeRope, delta);
+    }
+}
+
+function onKeyDown(e: KeyboardEvent) {
+    if (e.code === 'KeyQ') {
+        physics.spawnBall(mouseWorld);
     }
 }
 
@@ -94,7 +102,7 @@ function animate() {
         activeRope.pointsMesh.material.color.set(color);
     }
 
-    stateDisplay.innerText = `XPBD | Active: ${activeRope ? 'YES' : 'NO'} | Valid Anchor: ${canAnchor ? 'YES' : 'NO'}`;
+    stateDisplay.innerText = `XPBD | Active: ${activeRope ? 'YES' : 'NO'} | Valid Anchor: ${canAnchor ? 'YES' : 'NO'} | Q: Spawn Ball`;
 }
 
 init();
