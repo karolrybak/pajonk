@@ -5,7 +5,6 @@ import * as THREE from 'three';
 import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { WebPhysics, CONFIG } from './webPhysics';
 import { world, type Entity } from './ecs';
-import { getMouseWorld } from './utils';
 
 const BOUNDS = { width: 24, height: 14 };
 
@@ -32,14 +31,9 @@ const App = () => {
     const placementRef = useRef(placement);
     const ghostMeshRef = useRef<THREE.Mesh | null>(null);
 
-    useEffect(() => { 
-        toolRef.current = tool; 
-        if (tool !== 'create_obj') setPlacement(null); 
-    }, [tool]);
-    
+    useEffect(() => { toolRef.current = tool; if (tool !== 'create_obj') setPlacement(null); }, [tool]);
     useEffect(() => { lineBuildModeRef.current = lineBuildMode; }, [lineBuildMode]);
     useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
-    
     useEffect(() => {
         placementRef.current = placement;
         if (ghostMeshRef.current && physicsRef.current) {
@@ -59,14 +53,18 @@ const App = () => {
     const checkPlacementCollision = (pos: THREE.Vector2, shape: 'circle' | 'box') => {
         const radius = 0.5;
         const size = new THREE.Vector2(1, 1);
+        
         for (const ent of world.entities) {
             if (!ent.sdfCollider && !ent.physics) continue;
             const entPos = ent.position;
             const entRadius = ent.physics?.radius || (ent.sdfCollider?.type === 'circle' ? ent.sdfCollider.size.x : 0.7);
+
+            // Simple CPU collision check (Circle-Circle or AABB for MVP)
             const dist = pos.distanceTo(entPos);
             if (shape === 'circle') {
                 if (dist < radius + entRadius) return true;
             } else {
+                // Box-ish check
                 if (Math.abs(pos.x - entPos.x) < (size.x + (ent.sdfCollider?.size.x || 1)) / 2 && 
                     Math.abs(pos.y - entPos.y) < (size.y + (ent.sdfCollider?.size.y || 1)) / 2) return true;
             }
@@ -91,15 +89,6 @@ const App = () => {
             const physics = new WebPhysics(renderer, scene, BOUNDS);
             await physics.init();
             physicsRef.current = physics;
-
-            const resizeObserver = new ResizeObserver(() => {
-                if (!canvasRef.current) return;
-                const w = canvasRef.current.clientWidth;
-                const h = canvasRef.current.clientHeight;
-                renderer.setSize(w, h);
-                camera.updateProjectionMatrix();
-            });
-            resizeObserver.observe(canvasRef.current);
 
             const animate = () => {
                 const now = performance.now();
@@ -133,52 +122,50 @@ const App = () => {
 
             const onMouseMove = (e: MouseEvent) => {
                 if (!canvasRef.current) return;
-                mouseWorld = getMouseWorld(e, canvasRef.current, BOUNDS);
+                const rect = canvasRef.current.getBoundingClientRect();
+                const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+                const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+                mouseWorld.set(x * (BOUNDS.width / 2), y * (BOUNDS.height / 2));
             };
 
             const onMouseDown = (e: MouseEvent) => {
-                if (!canvasRef.current || e.target !== renderer.domElement) return;
-                const mWorld = getMouseWorld(e, canvasRef.current, BOUNDS);
-                if (e.button === 1) {
-                    setLineBuildMode(prev => prev === 'manual' ? 'auto' : 'manual');
-                    return;
+                if (e.target !== renderer.domElement) return;
+                if (e.button === 2 || (e.button === 0 && toolRef.current !== 'create_obj' && placementRef.current)) {
+                    setPlacement(null); return;
                 }
                 if (!physics.ready) return;
 
                 if (placementRef.current && e.button === 0) {
-                    if (!checkPlacementCollision(mWorld, placementRef.current.shape)) {
-                        addObject(placementRef.current.type, placementRef.current.shape, { position: mWorld.clone() });
+                    if (!checkPlacementCollision(mouseWorld, placementRef.current.shape)) {
+                        addObject(placementRef.current.type, placementRef.current.shape, { position: mouseWorld.clone() });
                     }
                     return;
                 }
 
                 if (toolRef.current === 'build_line') {
-                    const anchor = physics.findAnchor(mWorld);
+                    const anchor = physics.findAnchor(mouseWorld);
                     if (physics.activeRope) {
                         if (anchor) physics.pinActiveRope(physics.activeRope, anchor);
                     } else if (anchor) physics.createRope(anchor);
                 } else if (toolRef.current === 'select') {
-                   const pIdx = physics.getNearestParticle(mWorld, 0.5);
+                   const pIdx = physics.getNearestParticle(mouseWorld, 0.5);
                    const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
                    if (ent) setSelectedEntity(ent);
                    else {
-                       const statEnt = [...world.entities].find(e => e.sdfCollider && e.position.distanceTo(mWorld) < 1.5);
+                       const statEnt = [...world.entities].find(e => e.sdfCollider && e.position.distanceTo(mouseWorld) < 1.5);
                        setSelectedEntity(statEnt || null);
                    }
-                }
-            };
-
-            const onWheel = (e: WheelEvent) => {
-                if (!canvasRef.current || e.target !== renderer.domElement) return;
-                if (physics.activeRope && toolRef.current === 'build_line' && lineBuildModeRef.current === 'manual') {
-                    physics.adjustRopeLength(physics.activeRope, e.deltaY);
                 }
             };
 
             window.addEventListener('mousemove', onMouseMove);
             window.addEventListener('mousedown', onMouseDown);
             window.addEventListener('contextmenu', (e) => e.preventDefault());
-            window.addEventListener('wheel', onWheel);
+            window.addEventListener('wheel', (e) => {
+                if (e.target === renderer.domElement && physics.activeRope && toolRef.current === 'build_line' && lineBuildModeRef.current === 'manual') {
+                    physics.adjustRopeLength(physics.activeRope, e.deltaY);
+                }
+            });
             animate();
         };
         init();
@@ -217,15 +204,15 @@ const App = () => {
     return (
         <div style={{ position: 'fixed', inset: 0, color: '#eee', fontFamily: 'monospace', display: 'flex', flexDirection: 'column', userSelect: 'none', background: '#222' }}>
             <div style={{ height: 40, background: '#111', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 15px', gap: 20, zIndex: 10 }}>
-                <div style={{ fontWeight: 'bold', color: '#4a90e2' }}>PAJONK V0.9.9</div>
+                <div style={{ fontWeight: 'bold', color: '#4a90e2' }}>PAJONK V0.9.8</div>
                 <div style={{ display: 'flex', gap: 10 }}>
                    <div style={{ position: 'relative' }}>
                        <button onClick={() => setIsLevelMenuOpen(!isLevelMenuOpen)} style={{ background: '#222', color: '#ccc', border: '1px solid #444', padding: '2px 10px', cursor: 'pointer' }}>Level ▾</button>
                        {isLevelMenuOpen && (
                            <div style={{ position: 'absolute', top: '100%', left: 0, background: '#222', border: '1px solid #444', zIndex: 100, display: 'flex', flexDirection: 'column', minWidth: 100 }}>
                                <button onClick={() => { [...world.entities].forEach(deleteEntity); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>
-                               <button onClick={() => { setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>
-                               <button onClick={() => { setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load</button>
+                               <button onClick={() => { /* saveLevel implementation */ setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>
+                               <button onClick={() => { /* loadLevel implementation */ setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load</button>
                            </div>
                        )}
                    </div>
@@ -256,7 +243,7 @@ const App = () => {
                         <div style={{ position: 'relative' }}>
                             <button onClick={() => { setTool('create_obj'); setIsCreateMenuOpen(!isCreateMenuOpen); }} style={{ background: tool === 'create_obj' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CREATE OBJ ▾</button>
                             {isCreateMenuOpen && tool === 'create_obj' && (
-                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 120, marginBottom: 5 }}>
+                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 120, mb: 5 }}>
                                     <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>
                                     <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>
                                     <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>

@@ -292,10 +292,6 @@ export class WebPhysics {
         
         const pIdx = this.getNearestParticle(pos, 1.0);
         if (pIdx !== -1) {
-            // Check if this particle belongs to an attachable entity
-            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
-            if (ent && !ent.attachable) return null;
-
             const pPos = this.getParticlePos(pIdx);
             const radius = this.particles[pIdx*8+7];
             const nodeRadius = 0.04;
@@ -306,14 +302,7 @@ export class WebPhysics {
             return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
         }
 
-        // Map obstacles back to entities for attachment check
-        const statics = world.with('sdfCollider', 'position');
-        const staticArr = [...statics];
-
         for (let i = 0; i < this.numObstacles; i++) {
-            const ent = staticArr[i];
-            if (ent && !ent.attachable) continue;
-
             const off = i * 8;
             const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);
             const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);
