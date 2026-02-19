@@ -484,6 +484,92 @@
       "checksum": "15c11dd4a02d14ff80fddfea1a3fafaa620afb49fd0ac25c6a516d9ee9a41a4c",
       "id": "f95ef3c6-7619-4ded-8eb3-f6f1aebefce7",
       "timestamp": 1771533952971
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "I've created the architecture documentation in `docs/architecture.md`. It outlines the hybrid ECS + WebGPU approach we discussed, the communication flow between React, Miniplex, and the GPU, and the specific technical implementations for shapes, friction, and motors. I'm ready to proceed with the scaffolding whenever you are.",
+        "base_version": "0.0.91",
+        "version": "0.0.92",
+        "files": [
+          {
+            "filename": "docs/architecture.md",
+            "mode": "create",
+            "content": "# Web-Builder 2D Architecture\n\n## 1. Technical Stack\n- **Renderer:** Three.js `WebGPURenderer` (rendering and GPU state management).\n- **Physics Engine:** Custom WebGPU Compute Shaders based on **Position Based Dynamics (PBD)**.\n- **State Management (ECS):** `miniplex` for entity management, level structure, and CPU-side logic.\n- **Frontend:** React for the Editor UI and tool management.\n\n## 2. Core Architectural Pillars\n\n### A. The GPU / ECS Hybrid Flow\n1. **React UI:** User selects tools (Build, Create, Edit).\n2. **Miniplex World:** Interactions create or modify **Entities**. \n   - *Example Entity:* `{ transform, sdfCollider, renderable }`.\n3. **Sync Systems:** \n   - **Static Sync:** When a level object is added/moved in ECS, the `ObstacleSyncSystem` updates the GPU `obstacles` buffer.\n   - **Dynamic Sync:** Every frame, `PhysicsSyncSystem` reads back particle positions from GPU and updates ECS `Transform` components.\n4. **Solver:** The Compute Shader runs PBD iterations (Integrate -> Solve Constraints -> Solve Collisions).\n\n### B. Collision & Shapes\n- **Analytical SDFs:** Initial support for Circles and Boxes (fast, exact).\n- **Particle Clusters:** Complex dynamic objects are built from groups of particles held together by rigid distance/angle constraints.\n- **Texture SDFs (Planned):** For static level geometry, allowing complex hand-drawn environments processed via distance field textures.\n\n### C. Friction & Materials\n- **PBD Friction:** Implemented by projecting `oldPos` toward the current `pos` along the collision tangent, effectively reducing velocity components parallel to surfaces.\n- **Material Properties:** Entities will hold `friction`, `elasticity`, and `mass` components, which are packed into GPU buffers per-object.\n\n### D. Constraints & Motors\n- **Constraints:** Distance (ropes/stiffness), Angle (bending/rigidity), and Weld (rigid attachments).\n- **Motors:** \n  - **Motor Pins:** A special constraint type that applies a target angular velocity to a particle cluster relative to a pivot.\n  - **Linear Motors:** Adjustable `rest_length` over time (used in the rope spooling logic).\n\n## 3. Communication Diagram\n```mermaid\ngraph TD\n    A[React UI] -->|Commands| B(Miniplex World)\n    B -->|System: ObstacleSync| C[WebGPU Storage Buffers]\n    C -->|Compute Shader| D[GPU Physics Solver]\n    D -->|ReadBack| E(System: PhysicsSync)\n    E -->|Update Components| B\n    B -->|System: Render| F[Three.js Scene]\n```\n\n## 4. Remaining Considerations / To-Do\n- **Spatial Partitioning:** Implementation of a Spatial Hash Grid on GPU if static complexity exceeds analytical limits.\n- **Level Serialization:** Standardizing the JSON schema for ECS entity export/import.\n- **Substepping Optimization:** Balancing GPU iterations vs. CPU readback latency for maximum stability.",
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "in_progress",
+          "title": "Documentation & Architecture Design",
+          "text": "Created the documentation for the project's technical architecture, specifying the interaction between WebGPU, Miniplex ECS, and the physics simulation logic."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "docs/architecture.md",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "547e07953b8a5a5624d3b8b534ae843e71d394f32dd78245551d5f60e28fa73c",
+      "id": "7341cd64-33e6-4558-ac95-6eb3c9a3b97e",
+      "timestamp": 1771536528138
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "I've expanded the documentation to include a high-detail specification for the Level Editor and Object systems. This includes the UI layout (Object List, Palette, Properties), the specific data structures for Static/Dynamic/Kinematic objects, and the technical implementation of the 'Attachable' property. I've also defined the transformation logic for SDF-based objects to ensure rotation and resizing work correctly within the WebGPU physics solver.",
+        "base_version": "0.0.92",
+        "version": "0.0.93",
+        "files": [
+          {
+            "filename": "docs/editor_spec.md",
+            "mode": "create",
+            "content": "# Pajonk Level Editor Specification\n\n## 1. UI Layout & Functional Areas\n\n### 1.1 Top Menu\n- **Level:** \n  - `Create New`: Clears ECS world and GPU buffers.\n  - `Save`: Serializes ECS entities (filtered by 'persistent' tag) to JSON.\n  - `Load`: Deserializes JSON and recreates entities/GPU buffers.\n- **Mode:**\n  - `Editor`: Physics paused (or selective spooling), gizmos active, selection enabled.\n  - `Player`: Physics running, gizmos hidden, UI collapsed to minimal overlay.\n- **View:** Toggles (Checkboxes) for visibility of side panels:\n  - `Object List`, `Object Properties`, `Object Palette`.\n\n### 1.2 Object List (Panel)\n- Hierarchical or flat list of all active entities.\n- **Filters:** [All, Static, Dynamic, Rope, Special].\n- **Search:** Fuzzy search by entity name/ID.\n- **Actions:** Hide/Show (eye icon), Lock (prevent selection), Delete.\n\n### 1.3 Object Palette (Panel)\n- List of \"Blueprints\" for drag-and-drop or click-to-place:\n  - **Statics:** Box, Circle, Rounded Box.\n  - **Dynamics:** Physics-active Circle, Box.\n  - **Kinematics:** Plank (rigid bar), Heavy Ball, Bridge Segment.\n  - **Special:** Player Start, Goal, Wind Source.\n\n### 1.4 Object Properties (Panel)\n- Context-aware editor based on current selection.\n- **Common:** Position (X, Y), Name, Attachable (Boolean).\n- **Geometry:** Width, Height, Radius, Rotation (Degrees/Radians).\n- **Physics:** Mass, Friction, Elasticity (Restitution).\n- **Visual:** Color (Hex/Picker), Texture, Opacity.\n\n### 1.5 Toolbar\n- **Simulation:** [Stop, Play, Step-Frame].\n- **Tools:**\n  - `Select`: Basic click/box selection.\n  - `Move/Translate`: GRS Gizmo or direct drag.\n  - `Rotate`: Rotation ring gizmo.\n  - `Scale`: Axis-aligned scale gizmo (Static/Dynamic only).\n  - `Build Line`: Manual/Auto rope spooling tool.\n\n## 2. Object Type Definitions\n\n| Type | Physics Logic | Transformations | Notes |\n| :--- | :--- | :--- | :--- |\n| **Static** | Analytical SDF in GPU `Obstacles` buffer. | Pos, Rotate, Scale | Used for level geometry/walls. |\n| **Dynamic** | Particle-based (Single or Group). | Pos, Rotate, Scale | Basic physics shapes. |\n| **Kinematic** | Predefined particle clusters + rigid constraints. | Pos, Rotate | Fixed internal structure (e.g. Planks). |\n| **Rope** | Linked particle chain. | Control points | Spooled via tool or logic. |\n| **Player** | Complex Kinematic (Pajonk Zyzio). | Pos, Input-driven | Specialized PBD logic for legs/sticking. |\n\n## 3. Technical Implementation Details\n\n### 3.1 Attachable Property\n- A component `isAttachable` in ECS.\n- When the Rope Tool is active, `findAnchor` performs an intersection test only against entities with this component.\n- On GPU, this may be packed into a bitmask in the `Obstacle` or `Particle` struct.\n\n### 3.2 Transform Matrices (SDF Objects)\n- For rotated/scaled Statics, the GPU shader will receive an `inverseTransform` matrix.\n- Collision check: `Point_Local = InverseTransform * Point_World`.\n- The SDF calculation is then performed in local space, ensuring rotation and non-uniform scaling work perfectly.\n\n### 3.3 Kinematic Groups\n- Kinematics (like Planks) are instantiated as a set of particles.\n- **Weld Constraints:** Maintain 0-distance and fixed relative angles between nodes.\n- **Rotation:** Applying a rotation to a Kinematic object in the editor rotates the entire cluster's initial local coordinates before syncing to GPU.",
+            "status": "executed"
+          },
+          {
+            "filename": "docs/architecture.md",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "- **State Management (ECS):** `miniplex` for entity management, level structure, and CPU-side logic.",
+                "replace": "- **State Management (ECS):** `miniplex` for entity management, level structure, and CPU-side logic.\n- **Editor Engine:** Gizmo and Tool management via React + ECS interactions."
+              },
+              {
+                "find": "   - **Static Sync:** When a level object is added/moved in ECS, the `ObstacleSyncSystem` updates the GPU `obstacles` buffer.\n   - **Dynamic Sync:** Every frame, `PhysicsSyncSystem` reads back particle positions from GPU and updates ECS `Transform` components.",
+                "replace": "   - **Static Sync:** Updates GPU `Obstacles` with Transform matrices and SDF params.\n   - **Dynamic Sync:** Reads back particle positions; updates ECS `Transform` and UI `Object List`.\n   - **Property Sync:** UI edits directly modify ECS components, triggering buffer updates."
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "in_progress",
+          "title": "Editor Specification & Hybrid Architecture",
+          "text": "Detailed the Level Editor UI components and object types in docs/editor_spec.md and updated the architecture to reflect transform matrix logic for rotated/scaled objects."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "docs/editor_spec.md",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "docs/architecture.md",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "06ca9269f2688837495af9a3833a72ae6b95905817c0ef67044507e43729f069",
+      "id": "d12dc09c-7ecd-4872-a7fb-2ae00a8e0d88",
+      "timestamp": 1771538219844
     }
   ]
 }
