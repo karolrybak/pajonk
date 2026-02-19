@@ -30,6 +30,8 @@ struct Params {
     mousePos: vec2<f32>,
     activeParticleIdx: i32,
     numAttachments: u32,
+    damping: f32,
+    pendulumIdx: i32,
 };
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -60,7 +62,7 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let h = params.dt / f32(params.substeps);
     var vel = (p.pos - p.oldPos) / h;
-    vel = vel * 0.999;
+    vel = vel * params.damping;
     vel = vel + vec2<f32>(0.0, params.gravity) * h;
 
     let nextPos = p.pos + vel * h;
@@ -103,26 +105,26 @@ fn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {
     let p = particles[att.pIdx].pos;
     let a = particles[att.aIdx].pos;
     let b = particles[att.bIdx].pos;
+
+    // Cel na segmencie starej liny
     let link_target = mix(a, b, att.t);
     let delta = p - link_target;
     let dist = length(delta);
-    if (dist < 0.0001) { return; }
+    
+    if (dist < 0.00001) { return; }
 
     let wp = particles[att.pIdx].invMass;
     let wa = particles[att.aIdx].invMass;
     let wb = particles[att.bIdx].invMass;
-    let wSegment = wa * (1.0 - att.t) + wb * att.t;
-    let wSum = wp + wSegment;
+
+    // XPBD Barycentric weights
+    let wSum = wp + wa * (1.0 - att.t) * (1.0 - att.t) + wb * att.t * att.t;
+    
     if (wSum <= 0.0) { return; }
 
     let dLambda = -dist / wSum;
-    var correction = normalize(delta) * dLambda;
-    let maxCorrection = 0.05; // per iteration - dostosuj w razie potrzeby (0.01-0.1)
-    let corrLen = length(correction);
-    if (corrLen > maxCorrection) {
-        correction = (correction / corrLen) * maxCorrection;
-    }    
-    correction = correction * 0.8;
+    let correction = normalize(delta) * dLambda;
+
     if (wp > 0.0) { particles[att.pIdx].pos += correction * wp; }
     if (wa > 0.0) { particles[att.aIdx].pos -= correction * wa * (1.0 - att.t); }
     if (wb > 0.0) { particles[att.bIdx].pos -= correction * wb * att.t; }
@@ -166,10 +168,11 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let bx = 11.8;
     let by = 6.8;
-    if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; }
-    if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; }
-    if (p.pos.y > by - p.radius) { p.pos.y = by - p.radius; }
-    if (p.pos.y < -by + p.radius) { p.pos.y = -by + p.radius; }
+    // Inelastic collision (kill velocity on impact) to prevent jitter
+    if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; p.oldPos.x = p.pos.x; }
+    if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; p.oldPos.x = p.pos.x; }
+    if (p.pos.y > by - p.radius) { p.pos.y = by - p.radius; p.oldPos.y = p.pos.y; }
+    if (p.pos.y < -by + p.radius) { p.pos.y = -by + p.radius; p.oldPos.y = p.pos.y; }
 
     let circlePos = vec2<f32>(4.0, 2.0);
     let circleRad = 1.5;
@@ -177,6 +180,19 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     let dist = length(toC);
     if (dist < circleRad + p.radius) {
         p.pos = circlePos + normalize(toC) * (circleRad + p.radius);
+        p.oldPos = p.pos; // Dampen wall stickiness
+    }
+
+    if (params.pendulumIdx >= 0 && i != u32(params.pendulumIdx)) {
+        let penPos = particles[params.pendulumIdx].pos;
+        let penRad = particles[params.pendulumIdx].radius;
+        let toP = p.pos - penPos;
+        let dP = length(toP);
+        if (dP < penRad + p.radius) {
+            p.pos = penPos + normalize(toP) * (penRad + p.radius);
+            // Simple collision response: transfer some momentum would be complex,
+            // so we just project position for stability.
+        }
     }
 
     particles[i].pos = p.pos;

@@ -1,5 +1,16 @@
 import * as THREE from 'three';
 
+// Physics Configuration
+export const CONFIG = {
+    SEGMENT_LENGTH: 0.1,        // Długość spoczynkowa pojedynczego segmentu liny [m]
+    ROPE_NODE_MASS: 0.1,        // Masa pojedynczego węzła liny [kg]
+    ROPE_COMPLIANCE: 0.00001,   // Podatność wiązań (0 = idealnie sztywna, >0 = elastyczna)
+    VELOCITY_DAMPING: 0.992,    // Tłumienie prędkości (0.9-0.999) - symulacja oporu powietrza
+    GRAVITY: -15.0,             // Przyspieszenie grawitacyjne (oś Y) [m/s^2]
+    PENDULUM_RADIUS: 1.2,       // Promień ruchomej kuli [m]
+    PENDULUM_LENGTH: 4.0        // Długość ramienia wahadła [m]
+};
+
 const MAX_PARTICLES = 16384;
 const MAX_CONSTRAINTS = 16384;
 const MAX_ATTACHMENTS = 4096;
@@ -20,6 +31,11 @@ export class WebPhysics {
     ropes: any[] = [];
     balls: any[] = [];
     activeRope: any = null;
+    pendulum: any = null;
+
+    dirtyParticles: Set<number> = new Set();
+    freeParticleIndices: number[] = [];
+    freeConstraintIndices: number[] = [];
 
     device: GPUDevice | null = null;
     particleBuffer: GPUBuffer | null = null;
@@ -52,7 +68,7 @@ export class WebPhysics {
         this.distConstraintBuffer = device.createBuffer({ size: this.distConstraints.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.attachmentBuffer = device.createBuffer({ size: this.attachments.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
-        const paramsSize = 64;
+        const paramsSize = 80;
         this.paramsBuffer0 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         this.paramsBuffer1 = device.createBuffer({ size: paramsSize, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
@@ -89,14 +105,62 @@ export class WebPhysics {
         this.pipelines.solveParticleCollisions = createPipe('solveParticleCollisions');
         this.pipelines.solveCollisions = createPipe('solveCollisions');
 
+        this.setupPendulum();
         this.ready = true;
     }
 
+    setupPendulum() {
+        const pivotIdx = this.allocParticle();
+        const ballIdx = this.allocParticle();
+        const pivotPos = new THREE.Vector2(-6, 4);
+        const ballPos = pivotPos.clone().add(new THREE.Vector2(CONFIG.PENDULUM_LENGTH, 0));
+
+        this.setParticle(pivotIdx, pivotPos, 0.0); // Static pivot
+        this.setParticle(ballIdx, ballPos, 0.2); // Heavy ball (invMass 0.2 = 5kg)
+        this.particles[ballIdx * 8 + 7] = CONFIG.PENDULUM_RADIUS;
+
+        const cIdx = this.allocConstraint();
+        this.setDistConstraint(cIdx, pivotIdx, ballIdx, CONFIG.PENDULUM_LENGTH, 0.0);
+
+        const geo = new THREE.CircleGeometry(CONFIG.PENDULUM_RADIUS, 32);
+        const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0x5555ff }));
+        const armGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const arm = new THREE.Line(armGeo, new THREE.LineBasicMaterial({ color: 0x444444 }));
+        
+        this.scene.add(mesh, arm);
+        this.pendulum = { pivotIdx, ballIdx, mesh, arm };
+        this.syncGPU();
+    }
+
+    allocParticle(): number {
+        if (this.freeParticleIndices.length > 0) return this.freeParticleIndices.pop()!;
+        if (this.numParticles >= MAX_PARTICLES) return -1;
+        return this.numParticles++;
+    }
+
+    freeParticle(idx: number) {
+        this.freeParticleIndices.push(idx);
+        // Move to 0,0 and make static to stop processing in shader (mostly)
+        this.setParticle(idx, new THREE.Vector2(0, 0), 0.0);
+    }
+
+    allocConstraint(): number {
+        if (this.freeConstraintIndices.length > 0) return this.freeConstraintIndices.pop()!;
+        if (this.numDistConstraints >= MAX_CONSTRAINTS) return -1;
+        return this.numDistConstraints++;
+    }
+
+    freeConstraint(idx: number) {
+        this.freeConstraintIndices.push(idx);
+        this.setDistConstraint(idx, 0, 0, 0, 0);
+    }
+
     spawnBall(pos: THREE.Vector2) {
-        if (this.numParticles >= MAX_PARTICLES) return;
+        const idx = this.allocParticle();
+        if (idx === -1) return;
+
         const radius = 0.3 + Math.random() * 0.5;
-        const idx = this.numParticles++;
-        this.setParticle(idx, pos, 0.5 / (radius * radius)); // Mass proportional to area
+        this.setParticle(idx, pos, 0.5 / (radius * radius));
         this.particles[idx * 8 + 7] = radius;
 
         const geo = new THREE.CircleGeometry(radius, 16);
@@ -118,6 +182,12 @@ export class WebPhysics {
         if (pos.distanceTo(circlePos) < 1.5 + threshold) {
             return { pos: pos.clone().sub(circlePos).normalize().multiplyScalar(1.5).add(circlePos), type: 'static' };
         }
+        if (this.pendulum) {
+            const pPos = this.getParticlePos(this.pendulum.ballIdx);
+            if (pos.distanceTo(pPos) < CONFIG.PENDULUM_RADIUS + threshold) {
+                return { pos: pos.clone().sub(pPos).normalize().multiplyScalar(CONFIG.PENDULUM_RADIUS).add(pPos), type: 'static' };
+            }
+        }
         for (const rope of this.ropes) {
             if (rope === this.activeRope) continue;
             for (let i = 0; i < rope.segments - 1; i++) {
@@ -135,25 +205,53 @@ export class WebPhysics {
     getParticlePos(i: number) { return new THREE.Vector2(this.particles[i * 8], this.particles[i * 8 + 1]); }
 
     createRope(anchor: any): any {
-        const segments = 100, restLen = 0.05;
-        const indices: number[] = [], constraintIndices: number[] = [];
-        for (let i = 0; i < segments; i++) {
-            const idx = this.numParticles++;
-            indices.push(idx);
-            const invMass = (i === 0 && anchor.type !== 'rope') ? 0.0 : 1.0;
-            this.setParticle(idx, anchor.pos.clone().add(new THREE.Vector2(0, -i * restLen)), invMass);
-        }
-        if (anchor.type === 'rope') this.addAttachment(indices[0]!, anchor.aIdx, anchor.bIdx, anchor.t);
-        for (let i = 0; i < segments - 1; i++) {
-            const cIdx = this.numDistConstraints++;
-            constraintIndices.push(cIdx); this.setDistConstraint(cIdx, indices[i]!, indices[i + 1]!, restLen, 0.001);
-        }
-        const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(segments * 3), 3));
+        // Start with just 2 particles: Anchor -> Mouse
+        const segmentLength = CONFIG.SEGMENT_LENGTH;
+        const indices: number[] = [];
+        const constraintIndices: number[] = [];
+        
+        // 1. Anchor Particle
+        const idxA = this.allocParticle();
+        indices.push(idxA);
+        const invMassA = (anchor.type !== 'rope') ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS);
+        this.setParticle(idxA, anchor.pos, invMassA);
+
+        // 2. Mouse/Tail Particle
+        const idxB = this.allocParticle();
+        indices.push(idxB);
+        this.setParticle(idxB, anchor.pos, 1.0 / CONFIG.ROPE_NODE_MASS);
+
+        // Attachment if needed
+        if (anchor.type === 'rope') this.addAttachment(idxA, anchor.aIdx, anchor.bIdx, anchor.t);
+
+        // Constraint between them
+        const cIdx = this.allocConstraint();
+        constraintIndices.push(cIdx);
+        this.setDistConstraint(cIdx, idxA, idxB, segmentLength, CONFIG.ROPE_COMPLIANCE);
+
+        // Mesh (allocate max size upfront to avoid constant recreation)
+        const maxSegments = 200;
+        const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(maxSegments * 3), 3));
+        // Initialize geo to hide unused segments
+        geo.setDrawRange(0, 2);
+
         const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
         const pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffaa00, size: 0.08 }));
+        
         this.scene.add(line, pts);
-        const rope = { indices, constraintIndices, mesh: line, pointsMesh: pts, segments, segmentLength: restLen };
-        this.ropes.push(rope); this.activeRope = rope; this.syncGPU();
+        
+        const rope = {
+            indices,
+            constraintIndices,
+            mesh: line,
+            pointsMesh: pts,
+            segments: 1,
+            segmentLength: segmentLength
+        };
+        
+        this.ropes.push(rope);
+        this.activeRope = rope;
+        this.syncGPU();
         return rope;
     }
 
@@ -169,6 +267,7 @@ export class WebPhysics {
         this.particles[off + 2] = pos.x; this.particles[off + 3] = pos.y;
         this.particles[off + 4] = 0; this.particles[off + 5] = 0;
         this.particles[off + 6] = invMass; this.particles[off + 7] = 0.04;
+        this.dirtyParticles.add(i);
     }
 
     setDistConstraint(i: number, a: number, b: number, len: number, comp: number): void {
@@ -184,10 +283,24 @@ export class WebPhysics {
 
     update(mousePos: THREE.Vector2): void {
         if (!this.ready || this.isReadingBack) return;
+
+
+
         const substeps = 12, constraintIters = 6, dt = 1.0 / 60.0;
         const fill = (phase: number) => {
-            const b = new ArrayBuffer(64), f = new Float32Array(b), u = new Uint32Array(b), i = new Int32Array(b);
-            f[0] = dt; f[1] = -15.0; u[2] = this.numParticles; u[3] = this.numDistConstraints; u[4] = substeps; u[5] = phase; f[6] = mousePos.x; f[7] = mousePos.y; i[8] = this.activeRope ? this.activeRope.indices[this.activeRope.segments - 1] : -1; u[9] = this.numAttachments;
+            const b = new ArrayBuffer(80), f = new Float32Array(b), u = new Uint32Array(b), i = new Int32Array(b);
+            f[0] = dt; 
+            f[1] = CONFIG.GRAVITY; 
+            u[2] = this.numParticles; 
+            u[3] = this.numDistConstraints; 
+            u[4] = substeps; 
+            u[5] = phase; 
+            f[6] = mousePos.x; 
+            f[7] = mousePos.y;
+            i[8] = this.activeRope ? this.activeRope.indices[this.activeRope.indices.length - 1] : -1;
+            u[9] = this.numAttachments;
+            f[10] = CONFIG.VELOCITY_DAMPING;
+            i[11] = this.pendulum ? this.pendulum.ballIdx : -1;
             return b;
         };
         this.device?.queue.writeBuffer(this.paramsBuffer0!, 0, fill(0));
@@ -213,35 +326,126 @@ export class WebPhysics {
         this.readBackAndVisualize();
     }
 
-    async readBackAndVisualize() {
+    readBackAndVisualize() {
         if (!this.stagingBuffer || this.isReadingBack) return;
         this.isReadingBack = true;
-        try {
-            await this.stagingBuffer.mapAsync(GPUMapMode.READ);
-            this.particles.set(new Float32Array(this.stagingBuffer.getMappedRange()));
-            this.stagingBuffer.unmap();
-            for (const rope of this.ropes) {
-                const attr = rope.mesh.geometry.getAttribute('position');
-                for (let i = 0; i < rope.segments; i++) attr.setXYZ(i, this.particles[rope.indices[i] * 8]!, this.particles[rope.indices[i] * 8 + 1]!, 0);
-                attr.needsUpdate = true;
+
+        this.stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
+            const range = this.stagingBuffer!.getMappedRange();
+            const gpuData = new Float32Array(range);
+            
+            // Backup dirty particles (CPU is authoritative for initialization)
+            const backups: {i: number, data: Float32Array}[] = [];
+            this.dirtyParticles.forEach(i => {
+                backups.push({ i, data: this.particles.slice(i*8, i*8+8) });
+            });
+
+            this.particles.set(gpuData);
+
+            // Restore backups
+            for(const b of backups) {
+                this.particles.set(b.data, b.i*8);
             }
-            for (const ball of this.balls) {
-                const px = this.particles[ball.idx * 8], py = this.particles[ball.idx * 8 + 1];
-                ball.mesh.position.set(px!, py!, -0.1);
+            this.dirtyParticles.clear();
+
+            this.stagingBuffer!.unmap();
+            this.isReadingBack = false;
+            this.updateVisuals();
+        }).catch(() => {
+            this.isReadingBack = false;
+        });
+    }
+
+    updateVisuals() {
+        for (const rope of this.ropes) {
+            const attr = rope.mesh.geometry.getAttribute('position');
+            // Update draw range to match current topology
+            rope.mesh.geometry.setDrawRange(0, rope.indices.length);
+            if (rope.pointsMesh) rope.pointsMesh.geometry.setDrawRange(0, rope.indices.length);
+
+            for (let i = 0; i < rope.indices.length; i++) {
+                const idx = rope.indices[i];
+                attr.setXYZ(i, this.particles[idx * 8]!, this.particles[idx * 8 + 1]!, 0);
             }
-        } catch (e) { } finally { this.isReadingBack = false; }
+            attr.needsUpdate = true;
+        }
+        for (const ball of this.balls) {
+            const px = this.particles[ball.idx * 8], py = this.particles[ball.idx * 8 + 1];
+            ball.mesh.position.set(px!, py!, -0.1);
+        }
     }
 
     pinActiveRope(rope: any, anchor: any) {
-        const lastIdx = rope.indices[rope.segments - 1];
-        if (anchor.type === 'static') this.setParticle(lastIdx, anchor.pos, 0.0);
-        else this.addAttachment(lastIdx, anchor.aIdx, anchor.bIdx, anchor.t);
-        rope.mesh.material.color.set(0x00ffff); this.activeRope = null; this.syncGPU();
+        const lastIdx = rope.indices[rope.indices.length - 1];
+        // Fix the last particle position to the anchor
+        this.setParticle(lastIdx, anchor.pos, anchor.type === 'static' ? 0.0 : (1.0 / CONFIG.ROPE_NODE_MASS));
+        if (anchor.type !== 'static') this.addAttachment(lastIdx, anchor.aIdx, anchor.bIdx, anchor.t);
+        
+        // Finalize rope state
+        rope.mesh.material.color.set(0x00ffff);
+        this.activeRope = null;
+        this.syncGPU();
     }
 
+
+
     adjustRopeLength(rope: any, delta: number) {
-        rope.segmentLength = Math.max(0.001, Math.min(0.5, rope.segmentLength - delta * 0.005));
-        for (let i = 0; i < rope.constraintIndices.length; i++) this.setDistConstraint(rope.constraintIndices[i], rope.indices[i], rope.indices[i + 1], rope.segmentLength, 0.0);
-        this.device?.queue.writeBuffer(this.distConstraintBuffer!, 0, this.distConstraints);
+        const SEG_LEN = rope.segmentLength;
+        if (delta < 0) { // Scroll Up -> Add Segment
+             if (rope.indices.length >= 200) return;
+
+             const tailIdx = rope.indices[rope.indices.length - 1];
+             const prevIdx = rope.indices[rope.indices.length - 2];
+             
+             const prevPos = new THREE.Vector2(this.particles[prevIdx * 8], this.particles[prevIdx * 8 + 1]);
+             const tailPos = new THREE.Vector2(this.particles[tailIdx * 8], this.particles[tailIdx * 8 + 1]);
+
+             const dir = tailPos.clone().sub(prevPos);
+             if (dir.lengthSq() < 0.0001) dir.set(1, 0);
+             else dir.normalize();
+
+             const newPos = prevPos.clone().add(dir.multiplyScalar(SEG_LEN));
+             
+             const newIdx = this.allocParticle();
+             if (newIdx === -1) return;
+             this.setParticle(newIdx, newPos, 1.0);
+
+             const lastCIdx = rope.constraintIndices[rope.constraintIndices.length - 1];
+             this.setDistConstraint(lastCIdx, prevIdx, newIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
+             
+             const newCIdx = this.allocConstraint();
+             if (newCIdx !== -1) {
+                rope.constraintIndices.push(newCIdx);
+                this.setDistConstraint(newCIdx, newIdx, tailIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
+             }
+
+             rope.indices.pop();
+             rope.indices.push(newIdx);
+             rope.indices.push(tailIdx);
+             rope.segments++;
+             
+             this.syncGPU();
+        } 
+        else if (delta > 0) { // Scroll Down -> Remove Segment
+            if (rope.indices.length <= 2) return;
+
+            const tailIdx = rope.indices.pop(); 
+            const removedIdx = rope.indices.pop();
+            rope.indices.push(tailIdx);
+            
+            // Recycle the particle
+            if (removedIdx !== undefined) this.freeParticle(removedIdx);
+            
+            const removedCIdx = rope.constraintIndices.pop();
+            if (removedCIdx !== undefined) this.freeConstraint(removedCIdx);
+            
+            const lastCIdx = rope.constraintIndices[rope.constraintIndices.length - 1];
+            const newLastNodeIdx = rope.indices[rope.indices.length - 2];
+            
+            this.setDistConstraint(lastCIdx, newLastNodeIdx, tailIdx, SEG_LEN, CONFIG.ROPE_COMPLIANCE);
+            
+            rope.segments--;
+            this.syncGPU();
+        }
     }
 }

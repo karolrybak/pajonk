@@ -3,8 +3,9 @@ import * as THREE from 'three';
 import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
 import { WebPhysics } from './webPhysics';
 
-let scene: THREE.Scene, camera: THREE.OrthographicCamera, renderer: any, physics: WebPhysics, stateDisplay: HTMLSpanElement;
+let scene: THREE.Scene, camera: THREE.OrthographicCamera, renderer: any, physics: WebPhysics, stateDisplay: HTMLSpanElement, fpsDisplay: HTMLSpanElement;
 let activeRope: any = null;
+let lastTime = 0, frameCount = 0, fps = 0;
 const mouseWorld = new THREE.Vector2();
 const BOUNDS = { width: 24, height: 14 };
 
@@ -12,6 +13,7 @@ async function init() {
     if (!navigator.gpu) return;
 
     stateDisplay = document.getElementById('state') as HTMLSpanElement;
+    fpsDisplay = document.getElementById('fps') as HTMLSpanElement;
     scene = new THREE.Scene();
     camera = new THREE.OrthographicCamera(-BOUNDS.width/2, BOUNDS.width/2, BOUNDS.height/2, -BOUNDS.height/2, 0.1, 1000);
     camera.position.z = 10;
@@ -87,6 +89,15 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function animate() {
+    const now = performance.now();
+    frameCount++;
+    if (now - lastTime >= 1000) {
+        fps = frameCount;
+        frameCount = 0;
+        lastTime = now;
+        fpsDisplay.innerText = fps.toString();
+    }
+
     requestAnimationFrame(animate);
     if (physics.ready) {
         physics.update(mouseWorld);
@@ -102,7 +113,8 @@ function animate() {
         activeRope.pointsMesh.material.color.set(color);
     }
 
-    stateDisplay.innerText = `XPBD | Active: ${activeRope ? 'YES' : 'NO'} | Valid Anchor: ${canAnchor ? 'YES' : 'NO'} | Q: Spawn Ball`;
+    const ropeInfo = activeRope ? ` | Segments: ${activeRope.indices.length - 1}` : '';
+    stateDisplay.innerText = `XPBD | Valid Anchor: ${canAnchor ? 'YES' : 'NO'} | Q: Spawn Ball${ropeInfo}`;
 }
 
 init();
