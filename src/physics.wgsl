@@ -23,9 +23,10 @@ struct Attachment {
 
 struct Obstacle {
     pos: vec2<f32>,
-    size: vec2<f32>, // x: radius OR width, y: height
-    type_id: u32,    // 0: circle, 1: box
-    padding: u32,
+    size: vec2<f32>, 
+    type_id: u32,    
+    rotation: f32,   
+    padding: vec2<f32>,
 };
 
 struct Params {
@@ -49,6 +50,12 @@ struct Params {
 @group(0) @binding(3) var<uniform> params: Params;
 @group(0) @binding(4) var<storage, read> obstacles: array<Obstacle>;
 
+fn rotate(v: vec2<f32>, angle: f32) -> vec2<f32> {
+    let s = sin(angle);
+    let c = cos(angle);
+    return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
+}
+
 fn getInvMass(i: u32) -> f32 {
     let p = particles[i];
     if (params.paused == 1u && p.isFree == 0.0 && i != u32(params.activeParticleIdx)) {
@@ -68,7 +75,6 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     if (params.paused == 1u && p.isFree == 0.0) {
-        // Keep frozen
         particles[i].oldPos = p.pos;
         return;
     }
@@ -126,35 +132,34 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     let invMassI = getInvMass(i);
     if (invMassI <= 0.0) { return; }
 
-    // Bound collisions
     let bx = 11.8; let by = 6.8;
     if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; p.oldPos.x = p.pos.x; }
     if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; p.oldPos.x = p.pos.x; }
     if (p.pos.y > by - p.radius) { p.pos.y = by - p.radius; p.oldPos.y = p.pos.y; }
     if (p.pos.y < -by + p.radius) { p.pos.y = -by + p.radius; p.oldPos.y = p.pos.y; }
 
-    // Obstacle collisions (SDF style)
     for (var j: u32 = 0u; j < params.numObstacles; j++) {
         let obs = obstacles[j];
-        if (obs.type_id == 0u) { // Circle
+        if (obs.type_id == 0u) { 
             let toP = p.pos - obs.pos;
             let dist = length(toP);
             if (dist < obs.size.x + p.radius) {
                 p.pos = obs.pos + normalize(toP) * (obs.size.x + p.radius);
                 p.oldPos = p.pos;
             }
-        } else { // Box (AABB)
+        } else {
+            let localP = rotate(p.pos - obs.pos, -obs.rotation);
             let half = obs.size * 0.5;
-            let d = abs(p.pos - obs.pos) - half;
+            let d = abs(localP) - half;
             let dist = length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
             if (dist < p.radius) {
-                let n = select(vec2<f32>(sign(p.pos - obs.pos).x, 0.0), vec2<f32>(0.0, sign(p.pos - obs.pos).y), d.y > d.x);
-                p.pos += n * (p.radius - dist);
+                let n_local = select(vec2<f32>(sign(localP).x, 0.0), vec2<f32>(0.0, sign(localP).y), d.y > d.x);
+                let p_local_fixed = localP + n_local * (p.radius - dist);
+                p.pos = obs.pos + rotate(p_local_fixed, obs.rotation);
                 p.oldPos = p.pos;
             }
         }
     }
-
     particles[i].pos = p.pos;
 }
 

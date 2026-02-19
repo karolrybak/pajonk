@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { world, type Entity } from './ecs';
 
 export const CONFIG = {
     SEGMENT_LENGTH: 0.08,
@@ -23,7 +24,7 @@ export class WebPhysics {
     obstacles = new Float32Array(MAX_OBSTACLES * 8);
 
     numParticles = 0; numDistConstraints = 0; numAttachments = 0; numObstacles = 0;
-    ropes: any[] = []; balls: any[] = []; activeRope: any = null;
+    ropes: any[] = []; activeRope: any = null;
     dirtyParticles = new Set<number>(); freeParticleIndices: number[] = []; freeConstraintIndices: number[] = [];
 
     device: GPUDevice | null = null;
@@ -92,20 +93,23 @@ export class WebPhysics {
         this.ready = true;
     }
 
-    addObstacle(pos: THREE.Vector2, size: THREE.Vector2, type: number) {
-        if (this.numObstacles >= MAX_OBSTACLES) return;
-        const off = this.numObstacles * 8;
-        this.obstacles[off] = pos.x; this.obstacles[off+1] = pos.y;
-        this.obstacles[off+2] = size.x; this.obstacles[off+3] = size.y;
-        const uv = new Uint32Array(this.obstacles.buffer);
-        uv[off+4] = type;
-        this.numObstacles++;
-        
-        const mat = new THREE.MeshBasicMaterial({ color: 0x222222 });
-        const geo = type === 0 ? new THREE.CircleGeometry(size.x, 32) : new THREE.BoxGeometry(size.x, size.y, 0.1);
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(pos.x, pos.y, -0.5);
-        this.scene.add(mesh);
+    syncObstacles() {
+        const statics = world.with('sdfCollider', 'position');
+        let count = 0;
+        this.obstacles.fill(0);
+        for (const ent of statics) {
+            if (count >= MAX_OBSTACLES) break;
+            const off = count * 8;
+            this.obstacles[off] = ent.position.x;
+            this.obstacles[off + 1] = ent.position.y;
+            this.obstacles[off + 2] = ent.sdfCollider.size.x;
+            this.obstacles[off + 3] = ent.sdfCollider.size.y;
+            const uv = new Uint32Array(this.obstacles.buffer);
+            uv[off + 4] = ent.sdfCollider.type === 'circle' ? 0 : 1;
+            this.obstacles[off + 5] = ent.rotation;
+            count++;
+        }
+        this.numObstacles = count;
         this.device?.queue.writeBuffer(this.obstacleBuffer!, 0, this.obstacles);
     }
 
@@ -134,7 +138,7 @@ export class WebPhysics {
         this.particles[off+1] = pos.y; 
         this.particles[off+2] = pos.x; 
         this.particles[off+3] = pos.y; 
-        this.particles[off+4] = 0.0; // isFree defaults to false
+        this.particles[off+4] = 0.0; 
         this.particles[off+5] = 0.0; 
         this.particles[off+6] = invMass; 
         this.particles[off+7] = 0.04; 
@@ -220,7 +224,14 @@ export class WebPhysics {
             posAttr.needsUpdate = true;
         }
 
-        this.balls.forEach(b => b.mesh.position.set(this.particles[b.idx*8], this.particles[b.idx*8+1], -0.1));
+        const dynamics = world.with('physics', 'renderable');
+        for (const ent of dynamics) {
+            if (ent.physics.particleIdx !== undefined) {
+                const off = ent.physics.particleIdx * 8;
+                ent.position.set(this.particles[off], this.particles[off + 1]);
+                ent.renderable.mesh.position.set(ent.position.x, ent.position.y, -0.1);
+            }
+        }
     }
 
     getParticlePos(i: number) { return new THREE.Vector2(this.particles[i*8], this.particles[i*8+1]); }
@@ -277,12 +288,14 @@ export class WebPhysics {
 
     findAnchor(pos: THREE.Vector2): any {
         const bx=11.8, by=6.8, th=0.5;
-        // Check level bounds
         if (Math.abs(pos.x)>bx-th || Math.abs(pos.y)>by-th) return { pos: pos.clone().clamp(new THREE.Vector2(-bx,-by), new THREE.Vector2(bx,by)), type: 'static' };
         
-        // Check nearby particles (circles)
         const pIdx = this.getNearestParticle(pos, 1.0);
         if (pIdx !== -1) {
+            // Check if this particle belongs to an attachable entity
+            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
+            if (ent && !ent.attachable) return null;
+
             const pPos = this.getParticlePos(pIdx);
             const radius = this.particles[pIdx*8+7];
             const nodeRadius = 0.04;
@@ -293,8 +306,14 @@ export class WebPhysics {
             return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
         }
 
-        // Check static obstacles (which aren't particles)
+        // Map obstacles back to entities for attachment check
+        const statics = world.with('sdfCollider', 'position');
+        const staticArr = [...statics];
+
         for (let i = 0; i < this.numObstacles; i++) {
+            const ent = staticArr[i];
+            if (ent && !ent.attachable) continue;
+
             const off = i * 8;
             const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);
             const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);
@@ -332,7 +351,6 @@ export class WebPhysics {
         this.setParticle(idxA, anchor.pos, anchor.type==='static'?0:1/CONFIG.ROPE_NODE_MASS); 
         this.setParticle(idxB, anchor.pos, 1/CONFIG.ROPE_NODE_MASS);
         
-        // The active rope is free to simulate even when paused
         this.setParticleFree(idxA, true);
         this.setParticleFree(idxB, true);
         
@@ -364,9 +382,7 @@ export class WebPhysics {
             }
         }
         
-        // The rope is completed, so it will freeze when paused again
         rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));
-        
         this.activeRope = null; 
         this.syncGPU();
     }
@@ -423,11 +439,11 @@ export class WebPhysics {
     }
 
     spawnBall(pos: THREE.Vector2, bodyType: 'dynamic' | 'static' | 'kinematic' = 'dynamic', radius = 0.5, mass = 10.0) {
-        const idx = this.allocParticle(); if (idx===-1) return;
+        const idx = this.allocParticle(); if (idx===-1) return -1;
         const invMass = bodyType === 'dynamic' ? 1.0 / mass : 0;
-        this.setParticle(idx, pos, invMass); this.particles[idx*8+7] = radius;
-        const mesh = new THREE.Mesh(new THREE.CircleGeometry(radius, 16), new THREE.MeshBasicMaterial({ color: bodyType === 'dynamic' ? 0x00ff88 : 0x888888 }));
-        this.scene.add(mesh); this.balls.push({ idx, mesh, type: bodyType }); this.syncGPU();
-        this.updateVisuals();
+        this.setParticle(idx, pos, invMass); 
+        this.particles[idx*8+7] = radius;
+        this.syncGPU();
+        return idx;
     }
 }
