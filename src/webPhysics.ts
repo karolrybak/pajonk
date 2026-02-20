@@ -18,7 +18,7 @@ export class WebPhysics {
     renderer: any; scene: THREE.Scene; bounds: { width: number; height: number }; ready: boolean = false; paused: boolean = false;
     particles = new Float32Array(MAX_PARTICLES * 8);
     particleActive = new Uint8Array(MAX_PARTICLES);
-    distConstraints = new Float32Array(MAX_CONSTRAINTS * 4);
+    distConstraints = new Float32Array(MAX_CONSTRAINTS * 8);
     constraintVisible = new Uint8Array(MAX_CONSTRAINTS);
     attachments = new Float32Array(MAX_ATTACHMENTS * 4);
     obstacles = new Float32Array(MAX_OBSTACLES * 8);
@@ -27,11 +27,17 @@ export class WebPhysics {
     ropes: any[] = []; activeRope: any = null;
     dirtyParticles = new Set<number>(); freeParticleIndices: number[] = []; freeConstraintIndices: number[] = [];
 
+    particleColors = Array.from({length: MAX_PARTICLES}, () => new Set<number>());
+    colorCounts = new Int32Array(16);
+    maxColor = 0;
+    maxPhases = 16;
+
     device: GPUDevice | null = null;
     particleBuffer: GPUBuffer | null = null; distConstraintBuffer: GPUBuffer | null = null;
     attachmentBuffer: GPUBuffer | null = null; obstacleBuffer: GPUBuffer | null = null;
-    paramsBuffer0: GPUBuffer | null = null; paramsBuffer1: GPUBuffer | null = null; stagingBuffer: GPUBuffer | null = null;
-    bindGroup0: GPUBindGroup | null = null; bindGroup1: GPUBindGroup | null = null;
+    stagingBuffer: GPUBuffer | null = null;
+    paramsBuffers: GPUBuffer[] = [];
+    bindGroups: GPUBindGroup[] = [];
     pipelines: Record<string, GPUComputePipeline> = {}; isReadingBack = false;
 
     dragParticleIdx: number = -1;
@@ -54,8 +60,6 @@ export class WebPhysics {
         this.attachmentBuffer = device.createBuffer({ size: this.attachments.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.obstacleBuffer = device.createBuffer({ size: this.obstacles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
-        this.paramsBuffer0 = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        this.paramsBuffer1 = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         this.stagingBuffer = device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
 
         const bgl = device.createBindGroupLayout({
@@ -68,18 +72,20 @@ export class WebPhysics {
             ]
         });
 
-        const createBG = (pBuf: GPUBuffer) => device.createBindGroup({
-            layout: bgl,
-            entries: [
-                { binding: 0, resource: { buffer: this.particleBuffer! } },
-                { binding: 1, resource: { buffer: this.distConstraintBuffer! } },
-                { binding: 2, resource: { buffer: this.attachmentBuffer! } },
-                { binding: 3, resource: { buffer: pBuf } },
-                { binding: 4, resource: { buffer: this.obstacleBuffer! } }
-            ]
-        });
-
-        this.bindGroup0 = createBG(this.paramsBuffer0!); this.bindGroup1 = createBG(this.paramsBuffer1!);
+        for (let i = 0; i < this.maxPhases; i++) {
+            const pBuf = device.createBuffer({ size: 96, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            this.paramsBuffers.push(pBuf);
+            this.bindGroups.push(device.createBindGroup({
+                layout: bgl,
+                entries: [
+                    { binding: 0, resource: { buffer: this.particleBuffer! } },
+                    { binding: 1, resource: { buffer: this.distConstraintBuffer! } },
+                    { binding: 2, resource: { buffer: this.attachmentBuffer! } },
+                    { binding: 3, resource: { buffer: pBuf } },
+                    { binding: 4, resource: { buffer: this.obstacleBuffer! } }
+                ]
+            }));
+        }
         const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
         const createPipe = (entry: string) => device.createComputePipeline({ layout, compute: { module: shaderModule, entryPoint: entry } });
 
@@ -123,6 +129,7 @@ export class WebPhysics {
         return idx;
     }
     freeParticle(idx: number) { 
+        this.particleColors[idx].clear();
         this.freeParticleIndices.push(idx); 
         this.particleActive[idx] = 0;
         this.setParticle(idx, new THREE.Vector2(0,0), 0); 
@@ -133,7 +140,32 @@ export class WebPhysics {
         this.constraintVisible[idx] = 1;
         return idx;
     }
-    freeConstraint(idx: number) { this.freeConstraintIndices.push(idx); this.setDistConstraint(idx, 0,0,0,0); }
+    assignColor(a: number, b: number): number {
+        let color = 0;
+        const setA = this.particleColors[a];
+        const setB = this.particleColors[b];
+        while (setA.has(color) || setB.has(color)) color++;
+        if (color >= this.maxPhases) color = this.maxPhases - 1;
+        setA.add(color); setB.add(color);
+        this.colorCounts[color]++;
+        while (this.maxColor < 15 && this.colorCounts[this.maxColor + 1] > 0) this.maxColor++;
+        return color;
+    }
+    removeConstraintColor(idx: number) {
+        const off = idx * 8;
+        const uv = new Uint32Array(this.distConstraints.buffer);
+        const a = uv[off], b = uv[off+1], color = uv[off+4];
+        this.particleColors[a]?.delete(color);
+        this.particleColors[b]?.delete(color);
+        this.colorCounts[color]--;
+        if (this.colorCounts[color] < 0) this.colorCounts[color] = 0;
+        while (this.maxColor > 0 && this.colorCounts[this.maxColor] === 0) this.maxColor--;
+    }
+    freeConstraint(idx: number) { 
+        this.removeConstraintColor(idx);
+        this.freeConstraintIndices.push(idx); 
+        this.setDistConstraint(idx, 0,0,0,0,0); 
+    }
 
     setParticle(i: number, pos: THREE.Vector2, invMass: number) {
         const off = i * 8; 
@@ -157,8 +189,10 @@ export class WebPhysics {
         const off = i * 8; this.particles[off] = pos.x; this.particles[off+1] = pos.y; this.particles[off+2] = pos.x; this.particles[off+3] = pos.y; 
         this.dirtyParticles.add(i);
     }
-    setDistConstraint(i: number, a: number, b: number, len: number, comp: number) {
-        const off = i * 4; const uv = new Uint32Array(this.distConstraints.buffer); uv[off] = a; uv[off+1] = b; this.distConstraints[off+2] = len; this.distConstraints[off+3] = comp;
+    setDistConstraint(i: number, a: number, b: number, len: number, comp: number, color: number = 0) {
+        const off = i * 8; const uv = new Uint32Array(this.distConstraints.buffer); 
+        uv[off] = a; uv[off+1] = b; this.distConstraints[off+2] = len; this.distConstraints[off+3] = comp;
+        uv[off+4] = color; uv[off+5] = 0; uv[off+6] = 0; uv[off+7] = 0;
     }
     addAttachment(pIdx: number, aIdx: number, bIdx: number, t: number) {
         const off = this.numAttachments * 4; const uv = new Uint32Array(this.attachments.buffer); uv[off] = pIdx; uv[off+1] = aIdx; uv[off+2] = bIdx; this.attachments[off+3] = t; this.numAttachments++;
@@ -180,18 +214,21 @@ export class WebPhysics {
             f[0] = dt; f[1] = CONFIG.GRAVITY; u[2] = this.numParticles; u[3] = this.numDistConstraints; u[4] = subs; u[5] = ph; f[6] = mousePos.x; f[7] = mousePos.y; i[8] = activeIdx; u[9] = this.numAttachments; f[10] = CONFIG.VELOCITY_DAMPING; u[11] = this.paused ? 1 : 0; u[12] = this.numObstacles;
             return b;
         };
-        this.device?.queue.writeBuffer(this.paramsBuffer0!, 0, fill(0)); this.device?.queue.writeBuffer(this.paramsBuffer1!, 0, fill(1));
+        for (let ph = 0; ph <= this.maxColor; ph++) {
+            this.device?.queue.writeBuffer(this.paramsBuffers[ph], 0, fill(ph));
+        }
         const enc = this.device!.createCommandEncoder();
         
         for (let s = 0; s < subs; s++) {
-            const p1 = enc.beginComputePass(); p1.setBindGroup(0, this.bindGroup0!); p1.setPipeline(this.pipelines.integrate!); p1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); p1.end();
+            const p1 = enc.beginComputePass(); p1.setBindGroup(0, this.bindGroups[0]); p1.setPipeline(this.pipelines.integrate!); p1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); p1.end();
             for (let i = 0; i < 4; i++) {
-                const d0 = enc.beginComputePass(); d0.setBindGroup(0, this.bindGroup0!); d0.setPipeline(this.pipelines.solveDistance!); d0.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d0.end();
-                const d1 = enc.beginComputePass(); d1.setBindGroup(0, this.bindGroup1!); d1.setPipeline(this.pipelines.solveDistance!); d1.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d1.end();
-                const at = enc.beginComputePass(); at.setBindGroup(0, this.bindGroup0!); at.setPipeline(this.pipelines.solveAttachments!); at.dispatchWorkgroups(Math.ceil(this.numAttachments/64)); at.end();
+                for (let ph = 0; ph <= this.maxColor; ph++) {
+                    const d = enc.beginComputePass(); d.setBindGroup(0, this.bindGroups[ph]); d.setPipeline(this.pipelines.solveDistance!); d.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d.end();
+                }
+                const at = enc.beginComputePass(); at.setBindGroup(0, this.bindGroups[0]); at.setPipeline(this.pipelines.solveAttachments!); at.dispatchWorkgroups(Math.ceil(this.numAttachments/64)); at.end();
             }
-            const c0 = enc.beginComputePass(); c0.setBindGroup(0, this.bindGroup0!); c0.setPipeline(this.pipelines.solveParticleCollisions!); c0.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c0.end();
-            const c1 = enc.beginComputePass(); c1.setBindGroup(0, this.bindGroup0!); c1.setPipeline(this.pipelines.solveCollisions!); c1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c1.end();
+            const c0 = enc.beginComputePass(); c0.setBindGroup(0, this.bindGroups[0]); c0.setPipeline(this.pipelines.solveParticleCollisions!); c0.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c0.end();
+            const c1 = enc.beginComputePass(); c1.setBindGroup(0, this.bindGroups[0]); c1.setPipeline(this.pipelines.solveCollisions!); c1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c1.end();
         }
         
         enc.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);
@@ -217,7 +254,7 @@ export class WebPhysics {
             const uv = new Uint32Array(this.distConstraints.buffer);
             for(let i=0; i<this.numDistConstraints; i++) {
                 if (this.constraintVisible[i] === 0) continue;
-                const a = uv[i*4], b = uv[i*4+1];
+                const a = uv[i*8], b = uv[i*8+1];
                 if (a === b) continue;
                 posAttr.setXYZ(drawCount*2, this.particles[a*8], this.particles[a*8+1], 0);
                 posAttr.setXYZ(drawCount*2+1, this.particles[b*8], this.particles[b*8+1], 0);
@@ -260,7 +297,7 @@ export class WebPhysics {
         let minDist = radius;
         for(let i=0; i<this.numDistConstraints; i++) {
             if (this.constraintVisible[i] === 0) continue;
-            const a = uv[i*4], b = uv[i*4+1];
+            const a = uv[i*8], b = uv[i*8+1];
             if (a === b) continue;
             const pA = new THREE.Vector2(this.particles[a*8], this.particles[a*8+1]);
             const pB = new THREE.Vector2(this.particles[b*8], this.particles[b*8+1]);
@@ -284,7 +321,8 @@ export class WebPhysics {
         const pA = this.getParticlePos(a);
         const pB = this.getParticlePos(b);
         const dist = pA.distanceTo(pB);
-        this.setDistConstraint(cIdx, a, b, dist, 0.000001);
+        const color = this.assignColor(a, b);
+        this.setDistConstraint(cIdx, a, b, dist, 0.000001, color);
         this.syncGPU();
         this.updateVisuals();
     }
@@ -363,12 +401,14 @@ export class WebPhysics {
             const extraC = this.allocConstraint();
             if (extraC !== -1) {
                 this.constraintVisible[extraC] = 0;
-                this.setDistConstraint(extraC, idxA, anchor.targetIdx, anchor.distance + 0.02, 0);
+                const extraColor = this.assignColor(idxA, anchor.targetIdx);
+                this.setDistConstraint(extraC, idxA, anchor.targetIdx, anchor.distance + 0.02, 0, extraColor);
                 rope.anchorConstraints.push(extraC);
             }
         }
         
-        this.setDistConstraint(cIdx, idxA, idxB, CONFIG.SEGMENT_LENGTH, CONFIG.ROPE_COMPLIANCE);
+        const color = this.assignColor(idxA, idxB);
+        this.setDistConstraint(cIdx, idxA, idxB, CONFIG.SEGMENT_LENGTH, CONFIG.ROPE_COMPLIANCE, color);
         this.ropes.push(rope); this.activeRope = rope; this.syncGPU(); return rope;
     }
 
@@ -380,7 +420,8 @@ export class WebPhysics {
             const extraC = this.allocConstraint();
             if (extraC !== -1) {
                 this.constraintVisible[extraC] = 0;
-                this.setDistConstraint(extraC, last, anchor.targetIdx, anchor.distance + 0.02, 0);
+                const color = this.assignColor(last, anchor.targetIdx);
+                this.setDistConstraint(extraC, last, anchor.targetIdx, anchor.distance + 0.02, 0, color);
                 rope.anchorConstraints.push(extraC);
             }
         }
@@ -410,16 +451,21 @@ export class WebPhysics {
             this.setParticleFree(newIdx, true);
             
             const lastC = rope.constraintIndices[rope.constraintIndices.length-1]; 
-            this.setDistConstraint(lastC, prev, newIdx, SEG, CONFIG.ROPE_COMPLIANCE);
+            this.removeConstraintColor(lastC);
+            const color1 = this.assignColor(prev, newIdx);
+            this.setDistConstraint(lastC, prev, newIdx, SEG, CONFIG.ROPE_COMPLIANCE, color1);
             
             const newC = this.allocConstraint(); 
             if (newC === -1) {
                 this.freeParticle(newIdx);
-                this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE);
+                this.removeConstraintColor(lastC);
+                const colorRestore = this.assignColor(prev, tail);
+                this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE, colorRestore);
                 return;
             }
+            const color2 = this.assignColor(newIdx, tail);
             rope.constraintIndices.push(newC); 
-            this.setDistConstraint(newC, newIdx, tail, SEG, CONFIG.ROPE_COMPLIANCE);
+            this.setDistConstraint(newC, newIdx, tail, SEG, CONFIG.ROPE_COMPLIANCE, color2);
             
             rope.indices.splice(rope.indices.length - 1, 0, newIdx);
             rope.segments++; 
@@ -434,8 +480,10 @@ export class WebPhysics {
             this.freeConstraint(remC);
             
             const lastC = rope.constraintIndices[rope.constraintIndices.length-1]; 
+            this.removeConstraintColor(lastC);
             const prev = rope.indices[rope.indices.length-2];
-            this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE); 
+            const colorRestored = this.assignColor(prev, tail);
+            this.setDistConstraint(lastC, prev, tail, SEG, CONFIG.ROPE_COMPLIANCE, colorRestored); 
             rope.segments--; 
             this.syncGPU();
         }

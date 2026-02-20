@@ -12,6 +12,10 @@ struct DistanceConstraint {
     idxB: u32,
     restLength: f32,
     compliance: f32,
+    color: u32,
+    pad1: u32,
+    pad2: u32,
+    pad3: u32,
 };
 
 struct Attachment {
@@ -128,8 +132,9 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
 @compute @workgroup_size(64)
 fn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x;
-    if (i >= params.numDistConstraints || i % 2u != params.phase) { return; }
+    if (i >= params.numDistConstraints) { return; }
     let c = distConstraints[i];
+    if (c.idxA == c.idxB || c.color != params.phase) { return; }
     let w1 = getInvMass(c.idxA); 
     let w2 = getInvMass(c.idxB);
     let wSum = w1 + w2; if (wSum <= 0.0) { return; }
