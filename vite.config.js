@@ -14,10 +14,5 @@ export default defineConfig({
       target: 'esnext'
     },
     include: ['three']
-  },
-  resolve: {
-    alias: {
-      'three/webgpu': 'three/src/renderers/webgpu/WebGPURenderer.js'
-    }
   }
 });

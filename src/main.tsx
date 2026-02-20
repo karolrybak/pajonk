@@ -1,21 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import * as THREE from 'three';
-// @ts-ignore
-import WebGPURenderer from 'three/src/renderers/webgpu/WebGPURenderer.js';
-import { WebPhysics, CONFIG } from './webPhysics';
 import { world, type Entity } from './ecs';
-import { getMouseWorld } from './utils';
-
-const BOUNDS = { width: 24, height: 14 };
-
-type ToolMode = 'select' | 'build_line' | 'create_obj' | 'cut_line' | 'edit_obj' | 'joint';
-type PlacementState = { type: 'static' | 'dynamic', shape: 'circle' | 'box' | 'rounded_box' | 'capsule' | 'vesica' } | null;
+import { EditorEngine } from './core/EditorEngine';
+import { deleteEntity, updatePhysicsFromUI } from './core/EntityFactory';
+import type { ToolMode, PlacementState } from './types';
 
 const App = () => {
     const canvasRef = useRef<HTMLDivElement>(null);
-    const physicsRef = useRef<WebPhysics | null>(null);
-    
+    const engineRef = useRef<EditorEngine | null>(null);
+
     const [tool, setTool] = useState<ToolMode>('select');
     const [lineBuildMode, setLineBuildMode] = useState<'manual' | 'auto'>('manual');
     const [isPaused, setIsPaused] = useState(true);
@@ -26,198 +20,40 @@ const App = () => {
     const [placement, setPlacement] = useState<PlacementState>(null);
     const [fps, setFps] = useState(0);
 
-    const toolRef = useRef(tool);
-    const lineBuildModeRef = useRef(lineBuildMode);
-    const isPausedRef = useRef(isPaused);
-    const placementRef = useRef(placement);
-    const ghostMeshRef = useRef<THREE.Mesh | null>(null);
+    useEffect(() => {
+        if (!canvasRef.current) return;
+        const engine = new EditorEngine(canvasRef.current);
+        engine.onFpsUpdate = setFps;
+        engine.onSelectEntity = setSelectedEntity;
+        engine.onToggleLineBuildMode = () => setLineBuildMode(p => p === 'manual' ? 'auto' : 'manual');
+        engine.init();
+        engineRef.current = engine;
+        return () => engine.dispose();
+    }, []);
 
     useEffect(() => { 
-        toolRef.current = tool; 
         if (tool !== 'create_obj') {
             setPlacement(null);
             setIsCreateMenuOpen(false);
         }
+        if (engineRef.current) engineRef.current.tool = tool; 
     }, [tool]);
-    
-    useEffect(() => { lineBuildModeRef.current = lineBuildMode; }, [lineBuildMode]);
-    useEffect(() => { isPausedRef.current = isPaused; }, [isPaused]);
-    
-    useEffect(() => {
-        placementRef.current = placement;
-        if (ghostMeshRef.current && physicsRef.current) {
-            physicsRef.current.scene.remove(ghostMeshRef.current);
-            ghostMeshRef.current = null;
-        }
-        if (placement && physicsRef.current) {
-            const geo = (placement.shape === 'circle' || placement.shape === 'vesica') ? new THREE.CircleGeometry(1, 32) : new THREE.BoxGeometry(1, 1, 0.1);
-            const mat = new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.5 });
-            const mesh = new THREE.Mesh(geo, mat);
-            mesh.position.set(0, 0, 0.1);
-            physicsRef.current.scene.add(mesh);
-            ghostMeshRef.current = mesh;
-        }
-    }, [placement]);
 
-    const checkPlacementCollision = (pos: THREE.Vector2, _shape: string) => {
-        for (const ent of world.entities) {
-            if (!ent.sdfCollider && !ent.physics) continue;
-            if (pos.distanceTo(ent.position) < 0.5) return true;
-        }
-        return false;
+    useEffect(() => { if (engineRef.current) engineRef.current.lineBuildMode = lineBuildMode; }, [lineBuildMode]);
+    useEffect(() => { if (engineRef.current) engineRef.current.isPaused = isPaused; }, [isPaused]);
+    useEffect(() => { if (engineRef.current) engineRef.current.setPlacement(placement); }, [placement]);
+    useEffect(() => { if (engineRef.current) engineRef.current.selectedEntityId = selectedEntity?.id || null; }, [selectedEntity]);
+
+    const handleDelete = (ent: Entity) => {
+        if (!engineRef.current) return;
+        deleteEntity(engineRef.current.physics, ent);
+        if (selectedEntity?.id === ent.id) setSelectedEntity(null);
     };
 
-    useEffect(() => {
-        if (!canvasRef.current) return;
-        let scene: THREE.Scene, camera: THREE.OrthographicCamera, renderer: any;
-        let mouseWorld = new THREE.Vector2();
-        let frameCount = 0, lastTime = performance.now();
-        let alive = true;
-
-        const init = async () => {
-            scene = new THREE.Scene();
-            camera = new THREE.OrthographicCamera(-BOUNDS.width/2, BOUNDS.width/2, BOUNDS.height/2, -BOUNDS.height/2, 0.1, 1000);
-            camera.position.z = 10;
-            renderer = new WebGPURenderer({ antialias: true });
-            renderer.domElement.style.position = 'absolute';
-            renderer.domElement.style.top = '0';
-            renderer.domElement.style.left = '0';
-            renderer.setSize(canvasRef.current!.clientWidth, canvasRef.current!.clientHeight);
-            canvasRef.current?.appendChild(renderer.domElement);
-            await renderer.init();
-            const physics = new WebPhysics(renderer, scene, BOUNDS);
-            await physics.init();
-            physicsRef.current = physics;
-
-            const animate = () => {
-                if (!alive) return;
-                const now = performance.now();
-                frameCount++;
-                if (now - lastTime >= 1000) {
-                    setFps(frameCount); frameCount = 0; lastTime = now;
-                }
-                if (physics.ready) {
-                    physics.paused = isPausedRef.current;
-                    if (ghostMeshRef.current && placementRef.current) {
-                        ghostMeshRef.current.position.set(mouseWorld.x, mouseWorld.y, 0.1);
-                        const collided = checkPlacementCollision(mouseWorld, placementRef.current.shape);
-                        (ghostMeshRef.current.material as THREE.MeshBasicMaterial).color.set(collided ? 0xff0000 : 0x00ff00);
-                    }
-                    if (physics.activeRope && toolRef.current === 'build_line' && lineBuildModeRef.current === 'auto') {
-                        const rope = physics.activeRope;
-                        const tailIdx = rope.indices[rope.indices.length - 1];
-                        physics.setParticlePos(tailIdx, mouseWorld);
-                        let prevPos = physics.getParticlePos(rope.indices[rope.indices.length - 2]);
-                        let safety = 0;
-                        while (prevPos.distanceTo(mouseWorld) > CONFIG.SEGMENT_LENGTH * 1.3 && rope.indices.length < 500 && safety < 10) {
-                            physics.adjustRopeLength(rope, -1);
-                            prevPos = physics.getParticlePos(rope.indices[rope.indices.length - 2]);
-                            safety++;
-                        }
-                    }
-                    physics.syncObstacles();
-                    physics.update(mouseWorld);
-                }
-                renderer.render(scene, camera);
-                requestAnimationFrame(animate);
-            };
-
-            const onMouseMove = (e: MouseEvent) => {
-                if (!canvasRef.current) return;
-                const worldPos = getMouseWorld(e, canvasRef.current, BOUNDS);
-                mouseWorld.copy(worldPos);
-            };
-
-            const onMouseDown = (e: MouseEvent) => {
-                if (!canvasRef.current || e.target !== renderer.domElement) return;
-                const mWorld = getMouseWorld(e, canvasRef.current, BOUNDS);
-                if (e.button === 1) {
-                    setLineBuildMode(prev => prev === 'manual' ? 'auto' : 'manual');
-                    return;
-                }
-                if (!physics.ready) return;
-                if (placementRef.current && e.button === 0) {
-                    if (!checkPlacementCollision(mWorld, placementRef.current.shape)) {
-                        addObject(placementRef.current.type, placementRef.current.shape, { position: mWorld.clone() });
-                    }
-                    return;
-                }
-                if (toolRef.current === 'build_line') {
-                    const anchor = physics.findAnchor(mWorld);
-                    if (physics.activeRope) {
-                        if (anchor) physics.pinActiveRope(physics.activeRope, anchor);
-                    } else if (anchor) physics.createRope(anchor);
-                } else if (toolRef.current === 'select') {
-                   const pIdx = physics.getNearestParticle(mWorld, 0.5);
-                   const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
-                   if (ent) setSelectedEntity(ent);
-                   else {
-                       const statEnt = [...world.entities].find(e => e.sdfCollider && e.position.distanceTo(mWorld) < 1.5);
-                       setSelectedEntity(statEnt || null);
-                   }
-                }
-            };
-
-            window.addEventListener('mousemove', onMouseMove);
-            window.addEventListener('mousedown', onMouseDown);
-            window.addEventListener('contextmenu', (e) => e.preventDefault());
-            window.addEventListener('wheel', (e) => {
-                if (e.target === renderer.domElement && physics.activeRope && toolRef.current === 'build_line' && lineBuildModeRef.current === 'manual') {
-                    physics.adjustRopeLength(physics.activeRope, e.deltaY);
-                }
-            });
-            animate();
-            return () => {
-                alive = false;
-                window.removeEventListener('mousemove', onMouseMove);
-                window.removeEventListener('mousedown', onMouseDown);
-            };
-        };
-        init();
-    }, []);
-
-    const addObject = (type: 'static' | 'dynamic', shape: any, data?: Partial<Entity>) => {
-        if (!physicsRef.current) return;
-        const id = data?.id || Math.random().toString(36).substr(2, 9);
-        const name = data?.name || `${type}_${shape}_${id}`;
-        const pos = data?.position || new THREE.Vector2(0, 0);
-        let pIdx: number | undefined;
-        
-        const initialRadius = shape === 'circle' ? 1.0 : 0.5;
-        const initialSize = new THREE.Vector2(2, 2);
-
-        if (type === 'dynamic') pIdx = physicsRef.current.spawnBall(pos, 'dynamic', initialRadius, 10.0);
-
-        const mat = new THREE.MeshBasicMaterial({ color: type === 'static' ? 0x444444 : 0x00ff88 });
-        const geo = (shape === 'circle' || shape === 'vesica') ? new THREE.CircleGeometry(1, 32) : new THREE.BoxGeometry(1, 1, 0.1);
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(pos.x, pos.y, -0.1);
-        mesh.rotation.z = data?.rotation || 0;
-        mesh.scale.set(shape === 'circle' ? initialRadius : initialSize.x, shape === 'circle' ? initialRadius : initialSize.y, 1);
-        physicsRef.current.scene.add(mesh);
-
-        const ent: Entity = {
-            id, name, position: pos.clone(), rotation: data?.rotation || 0, scale: new THREE.Vector2(0.2, 0.2),
-            sdfCollider: type === 'static' ? { type: shape, size: shape === 'circle' ? new THREE.Vector2(initialRadius, 0) : initialSize.clone() } : undefined,
-            physics: type === 'dynamic' ? { bodyType: 'dynamic', mass: 10, invMass: 0.1, radius: initialRadius, particleIdx: pIdx } : undefined,
-            renderable: { mesh }, attachable: true, tags: [type]
-        };
-        world.add(ent); setSelectedEntity(ent); return ent;
-    };
-
-    const deleteEntity = (ent: Entity) => {
-        if (!physicsRef.current) return;
-        if (ent.renderable) physicsRef.current.scene.remove(ent.renderable.mesh);
-        if (ent.physics?.particleIdx !== undefined) physicsRef.current.freeParticle(ent.physics.particleIdx);
-        world.remove(ent); if (selectedEntity?.id === ent.id) setSelectedEntity(null);
-    };
-
-    const updatePhysicsFromUI = (ent: Entity) => {
-        if (!physicsRef.current) return;
-        if (ent.physics?.particleIdx !== undefined) {
-            physicsRef.current.setParticlePos(ent.physics.particleIdx, ent.position);
-            physicsRef.current.syncGPU();
-        }
+    const handleUpdatePhysics = (ent: Entity) => {
+        if (!engineRef.current) return;
+        updatePhysicsFromUI(engineRef.current.physics, ent);
+        setSelectedEntity({...ent});
     };
 
     return (
@@ -229,7 +65,7 @@ const App = () => {
                        <button onClick={() => setIsLevelMenuOpen(!isLevelMenuOpen)} style={{ background: '#222', color: '#ccc', border: '1px solid #444', padding: '2px 10px', cursor: 'pointer' }}>Level ▾</button>
                        {isLevelMenuOpen && (
                            <div style={{ position: 'absolute', top: '100%', left: 0, background: '#222', border: '1px solid #444', zIndex: 100, display: 'flex', flexDirection: 'column', minWidth: 100 }}>
-                               <button onClick={() => { [...world.entities].forEach(deleteEntity); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>
+                               <button onClick={() => { [...world.entities].forEach(handleDelete); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>
                                <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>
                                <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load</button>
                            </div>
@@ -266,8 +102,8 @@ const App = () => {
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                     <span>Position</span>
                                     <div style={{ display: 'flex', gap: 4 }}>
-                                        <input type="number" value={selectedEntity.position.x} onChange={e => { selectedEntity.position.x = Number(e.target.value); updatePhysicsFromUI(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.x = selectedEntity.position.x; setSelectedEntity({...selectedEntity}); }} step="0.1" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>
-                                        <input type="number" value={selectedEntity.position.y} onChange={e => { selectedEntity.position.y = Number(e.target.value); updatePhysicsFromUI(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.y = selectedEntity.position.y; setSelectedEntity({...selectedEntity}); }} step="0.1" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>
+                                        <input type="number" value={selectedEntity.position.x} onChange={e => { selectedEntity.position.x = Number(e.target.value); handleUpdatePhysics(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.x = selectedEntity.position.x; setSelectedEntity({...selectedEntity}); }} step="0.1" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>
+                                        <input type="number" value={selectedEntity.position.y} onChange={e => { selectedEntity.position.y = Number(e.target.value); handleUpdatePhysics(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.y = selectedEntity.position.y; setSelectedEntity({...selectedEntity}); }} step="0.1" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>
                                     </div>
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -280,7 +116,6 @@ const App = () => {
                                             <span>Width / R1</span>
                                             <input type="number" value={selectedEntity.sdfCollider.size.x} onChange={e => { 
                                                 selectedEntity.sdfCollider!.size.x = Number(e.target.value); 
-                                                if (selectedEntity.renderable) selectedEntity.renderable.mesh.scale.x = selectedEntity.sdfCollider!.size.x; 
                                                 setSelectedEntity({...selectedEntity}); 
                                             }} step="0.1" style={{ width: 60, background: '#111', color: '#fff' }}/>
                                         </div>
@@ -288,7 +123,6 @@ const App = () => {
                                             <span>Height / R2</span>
                                             <input type="number" value={selectedEntity.sdfCollider.size.y} onChange={e => { 
                                                 selectedEntity.sdfCollider!.size.y = Number(e.target.value); 
-                                                if (selectedEntity.renderable) selectedEntity.renderable.mesh.scale.y = (selectedEntity.sdfCollider!.type === 'circle' ? selectedEntity.sdfCollider!.size.x : selectedEntity.sdfCollider!.size.y); 
                                                 setSelectedEntity({...selectedEntity}); 
                                             }} step="0.1" style={{ width: 60, background: '#111', color: '#fff' }}/>
                                         </div>
@@ -298,7 +132,7 @@ const App = () => {
                                         </div>
                                     </div>
                                 )}
-                                <button onClick={() => deleteEntity(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>
+                                <button onClick={() => handleDelete(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>
                             </div>
                         </div>
                     )}
