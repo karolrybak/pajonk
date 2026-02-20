@@ -115,7 +115,7 @@ export class WebPhysics {
             uv[off + 4] = typeMap[ent.sdfCollider.type] || 0;
             this.obstacles[off + 5] = ent.rotation;
             this.obstacles[off + 6] = ent.scale.x; 
-            this.obstacles[off + 7] = ent.scale.y;
+            this.obstacles[off + 7] = ent.friction ?? 0.5;
             count++;
         }
         this.numObstacles = count;
@@ -167,16 +167,21 @@ export class WebPhysics {
         this.setDistConstraint(idx, 0,0,0,0,0); 
     }
 
-    setParticle(i: number, pos: THREE.Vector2, invMass: number) {
+    setParticle(i: number, pos: THREE.Vector2, invMass: number, friction: number = 0.5) {
         const off = i * 8; 
         this.particles[off] = pos.x; 
         this.particles[off+1] = pos.y; 
         this.particles[off+2] = pos.x; 
         this.particles[off+3] = pos.y; 
         this.particles[off+4] = 0.0; 
-        this.particles[off+5] = 0.0; 
+        this.particles[off+5] = friction; 
         this.particles[off+6] = invMass; 
         this.particles[off+7] = 0.04; 
+        this.dirtyParticles.add(i);
+    }
+    
+    setParticleFriction(i: number, friction: number) {
+        this.particles[i * 8 + 5] = friction;
         this.dirtyParticles.add(i);
     }
     
@@ -295,6 +300,7 @@ export class WebPhysics {
         const uv = new Uint32Array(this.distConstraints.buffer);
         let closest = -1;
         let minDist = radius;
+        const bestProj = new THREE.Vector2();
         for(let i=0; i<this.numDistConstraints; i++) {
             if (this.constraintVisible[i] === 0) continue;
             const a = uv[i*8], b = uv[i*8+1];
@@ -310,9 +316,10 @@ export class WebPhysics {
             if (d < minDist) {
                 minDist = d;
                 closest = i;
+                bestProj.copy(proj);
             }
         }
-        return closest;
+        return closest !== -1 ? { index: closest, proj: bestProj } : null;
     }
 
     createJoint(a: number, b: number) {
@@ -327,27 +334,38 @@ export class WebPhysics {
         this.updateVisuals();
     }
 
-    findAnchor(pos: THREE.Vector2): any {
+    findAnchor(pos: THREE.Vector2, ignoreIndices?: number[]): any {
         const bx=11.8, by=6.8, th=0.5;
         if (Math.abs(pos.x)>bx-th || Math.abs(pos.y)>by-th) return { pos: pos.clone().clamp(new THREE.Vector2(-bx,-by), new THREE.Vector2(bx,by)), type: 'static' };
         
-        const pIdx = this.getNearestParticle(pos, 1.0);
-        if (pIdx !== -1) {
-            // Check if this particle belongs to an attachable entity
-            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
-            if (ent && !ent.attachable) return null;
+        const ignoreSet = new Set(ignoreIndices || []);
 
-            const pPos = this.getParticlePos(pIdx);
-            const radius = this.particles[pIdx*8+7];
-            const nodeRadius = 0.04;
-            const dir = pos.clone().sub(pPos);
-            if (dir.lengthSq() === 0) dir.set(1, 0);
-            dir.normalize();
-            const surfacePos = pPos.clone().add(dir.multiplyScalar(radius + nodeRadius));
-            return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
+        let pIdx = -1;
+        let minDistSq = 1.0;
+        for (let i = 0; i < this.numParticles; i++) {
+            if (!this.particleActive[i] || ignoreSet.has(i)) continue;
+            const px = this.particles[i*8], py = this.particles[i*8+1];
+            const distSq = (px - pos.x)**2 + (py - pos.y)**2;
+            if (distSq < minDistSq) {
+                minDistSq = distSq;
+                pIdx = i;
+            }
         }
 
-        // Map obstacles back to entities for attachment check
+        if (pIdx !== -1) {
+            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
+            if (!ent || ent.attachable) {
+                const pPos = this.getParticlePos(pIdx);
+                const radius = this.particles[pIdx*8+7];
+                const nodeRadius = 0.04;
+                const dir = pos.clone().sub(pPos);
+                if (dir.lengthSq() === 0) dir.set(1, 0);
+                dir.normalize();
+                const surfacePos = pPos.clone().add(dir.multiplyScalar(radius + nodeRadius));
+                return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
+            }
+        }
+
         const statics = world.with('sdfCollider', 'position');
         const staticArr = [...statics];
 
@@ -359,6 +377,7 @@ export class WebPhysics {
             const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);
             const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);
             const type = new Uint32Array(this.obstacles.buffer)[off+4];
+            
             if (type === 0) {
                 if (pos.distanceTo(obsPos) < obsSize.x + th) {
                     const dir = pos.clone().sub(obsPos);
@@ -367,16 +386,31 @@ export class WebPhysics {
                     return { pos: surfacePos, type: 'static' };
                 }
             } else {
+                const rotation = this.obstacles[off+5];
+                const s = Math.sin(-rotation);
+                const c = Math.cos(-rotation);
+                const dx = pos.x - obsPos.x;
+                const dy = pos.y - obsPos.y;
+                const localX = dx * c - dy * s;
+                const localY = dx * s + dy * c;
+
                 const half = obsSize.clone().multiplyScalar(0.5);
-                const d = new THREE.Vector2(Math.abs(pos.x - obsPos.x) - half.x, Math.abs(pos.y - obsPos.y) - half.y);
+                const d = new THREE.Vector2(Math.abs(localX) - half.x, Math.abs(localY) - half.y);
                 if (Math.max(d.x, d.y) < th) {
-                    const localPos = pos.clone().sub(obsPos);
-                    if (Math.abs(localPos.x) / half.x > Math.abs(localPos.y) / half.y) {
-                        localPos.x = Math.sign(localPos.x || 1) * half.x;
+                    let attachX = localX;
+                    let attachY = localY;
+                    if (Math.abs(localX) / half.x > Math.abs(localY) / half.y) {
+                        attachX = Math.sign(localX || 1) * half.x;
                     } else {
-                        localPos.y = Math.sign(localPos.y || 1) * half.y;
+                        attachY = Math.sign(localY || 1) * half.y;
                     }
-                    return { pos: obsPos.clone().add(localPos), type: 'static' };
+                    
+                    const sr = Math.sin(rotation);
+                    const cr = Math.cos(rotation);
+                    const worldAttachX = obsPos.x + attachX * cr - attachY * sr;
+                    const worldAttachY = obsPos.y + attachX * sr + attachY * cr;
+
+                    return { pos: new THREE.Vector2(worldAttachX, worldAttachY), type: 'static' };
                 }
             }
         }
@@ -428,6 +462,14 @@ export class WebPhysics {
         
         rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));
         this.activeRope = null; 
+        this.syncGPU();
+    }
+
+    freeActiveRope() {
+        if (!this.activeRope) return;
+        const rope = this.activeRope;
+        rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));
+        this.activeRope = null;
         this.syncGPU();
     }
 

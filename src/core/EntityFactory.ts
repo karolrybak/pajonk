@@ -43,7 +43,7 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
     physics.scene.add(mesh);
 
     const ent: Entity = {
-        id, name, position: pos.clone(), rotation: data?.rotation || 0, scale: new THREE.Vector2(0.2, 0.2),
+        id, name, position: pos.clone(), rotation: data?.rotation || 0, scale: new THREE.Vector2(0.2, 0.2), friction: 0.5,
         sdfCollider: type === 'static' ? { type: shape, size: shape === 'circle' ? new THREE.Vector2(initialRadius, 0) : initialSize.clone() } : undefined,
         physics: type === 'dynamic' ? { bodyType: 'dynamic', mass: 10, invMass: 0.1, radius: initialRadius, particleIdx: pIdx } : undefined,
         renderable: { mesh }, attachable: true, tags: [type]

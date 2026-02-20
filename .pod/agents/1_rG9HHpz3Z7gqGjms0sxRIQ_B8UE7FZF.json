@@ -315,6 +315,300 @@
       "checksum": "9b61ccb41f5be1cb27b29bdb0100ce02af1df53da88af6ab854df07e5f8b8ef8",
       "id": "f31ce558-d661-48bd-a41d-f7a4d2d148f0",
       "timestamp": 1771601280110
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Fixed the rope attachment bug by passing an `ignoreList` to `findAnchor` so the rope doesn't try to attach to its own trailing node instead of static geometry. Replaced standard AABB bounds checks with properly rotated local-space bounds checks. Added an interactive Ring Gizmo (green for attached, orange for loose) and enabled creating loose-ended ropes in empty space.",
+        "base_version": "0.0.115",
+        "version": "0.0.116",
+        "files": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    ghostMesh: THREE.Mesh | null = null;\n    mouseWorld = new THREE.Vector2();",
+                "replace": "    ghostMesh: THREE.Mesh | null = null;\n    anchorGizmo: THREE.Mesh;\n    mouseWorld = new THREE.Vector2();"
+              },
+              {
+                "find": "        this.physics = new WebPhysics(this.renderer, this.scene, BOUNDS);\n        \n        this.onMouseMove = this.onMouseMove.bind(this);",
+                "replace": "        this.physics = new WebPhysics(this.renderer, this.scene, BOUNDS);\n        \n        const gizmoGeo = new THREE.RingGeometry(0.2, 0.3, 16);\n        const gizmoMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8, depthTest: false });\n        this.anchorGizmo = new THREE.Mesh(gizmoGeo, gizmoMat);\n        this.anchorGizmo.visible = false;\n        this.scene.add(this.anchorGizmo);\n\n        this.onMouseMove = this.onMouseMove.bind(this);"
+              },
+              {
+                "find": "            if (this.ghostMesh && this.placement) {\n                this.ghostMesh.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.1);\n                const collided = this.checkPlacementCollision(this.mouseWorld, this.placement.shape);\n                const targetColor = collided ? 0xff0000 : 0x00ff00;\n                if (this.placement.type === 'static' && this.ghostMesh.userData.uniforms) {\n                    this.ghostMesh.userData.uniforms.uColor.value.setHex(targetColor);\n                } else {\n                    (this.ghostMesh.material as THREE.MeshBasicMaterial).color.setHex(targetColor);\n                }\n            }\n            if (this.physics.activeRope && this.tool === 'build_line' && this.lineBuildMode === 'auto') {",
+                "replace": "            if (this.ghostMesh && this.placement) {\n                this.ghostMesh.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.1);\n                const collided = this.checkPlacementCollision(this.mouseWorld, this.placement.shape);\n                const targetColor = collided ? 0xff0000 : 0x00ff00;\n                if (this.placement.type === 'static' && this.ghostMesh.userData.uniforms) {\n                    this.ghostMesh.userData.uniforms.uColor.value.setHex(targetColor);\n                } else {\n                    (this.ghostMesh.material as THREE.MeshBasicMaterial).color.setHex(targetColor);\n                }\n            }\n            if (this.tool === 'build_line') {\n                const ignore = this.physics.activeRope ? this.physics.activeRope.indices : undefined;\n                const anchor = this.physics.findAnchor(this.mouseWorld, ignore);\n                if (anchor) {\n                    this.anchorGizmo.position.set(anchor.pos.x, anchor.pos.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0x00ff00);\n                } else {\n                    this.anchorGizmo.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0xffaa00);\n                }\n                this.anchorGizmo.visible = true;\n            } else {\n                this.anchorGizmo.visible = false;\n            }\n            if (this.physics.activeRope && this.tool === 'build_line' && this.lineBuildMode === 'auto') {"
+              },
+              {
+                "find": "        if (this.tool === 'build_line') {\n            const anchor = this.physics.findAnchor(mWorld);\n            if (this.physics.activeRope) {\n                if (anchor) this.physics.pinActiveRope(this.physics.activeRope, anchor);\n            } else if (anchor) {\n                this.physics.createRope(anchor);\n            }\n        } else if (this.tool === 'select') {",
+                "replace": "        if (this.tool === 'build_line') {\n            const ignore = this.physics.activeRope ? this.physics.activeRope.indices : undefined;\n            const anchor = this.physics.findAnchor(mWorld, ignore);\n            if (this.physics.activeRope) {\n                if (anchor) {\n                    this.physics.pinActiveRope(this.physics.activeRope, anchor);\n                } else {\n                    this.physics.freeActiveRope();\n                }\n            } else {\n                const startAnchor = anchor || { pos: mWorld.clone(), type: 'loose' };\n                this.physics.createRope(startAnchor);\n            }\n        } else if (this.tool === 'select') {"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    findAnchor(pos: THREE.Vector2): any {\n        const bx=11.8, by=6.8, th=0.5;\n        if (Math.abs(pos.x)>bx-th || Math.abs(pos.y)>by-th) return { pos: pos.clone().clamp(new THREE.Vector2(-bx,-by), new THREE.Vector2(bx,by)), type: 'static' };\n        \n        const pIdx = this.getNearestParticle(pos, 1.0);\n        if (pIdx !== -1) {\n            // Check if this particle belongs to an attachable entity\n            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);\n            if (ent && !ent.attachable) return null;\n\n            const pPos = this.getParticlePos(pIdx);\n            const radius = this.particles[pIdx*8+7];\n            const nodeRadius = 0.04;\n            const dir = pos.clone().sub(pPos);\n            if (dir.lengthSq() === 0) dir.set(1, 0);\n            dir.normalize();\n            const surfacePos = pPos.clone().add(dir.multiplyScalar(radius + nodeRadius));\n            return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };\n        }\n\n        // Map obstacles back to entities for attachment check\n        const statics = world.with('sdfCollider', 'position');\n        const staticArr = [...statics];\n\n        for (let i = 0; i < this.numObstacles; i++) {\n            const ent = staticArr[i];\n            if (ent && !ent.attachable) continue;\n\n            const off = i * 8;\n            const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);\n            const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);\n            const type = new Uint32Array(this.obstacles.buffer)[off+4];\n            if (type === 0) {\n                if (pos.distanceTo(obsPos) < obsSize.x + th) {\n                    const dir = pos.clone().sub(obsPos);\n                    if (dir.lengthSq() === 0) dir.set(1, 0);\n                    const surfacePos = obsPos.clone().add(dir.normalize().multiplyScalar(obsSize.x));\n                    return { pos: surfacePos, type: 'static' };\n                }\n            } else {\n                const half = obsSize.clone().multiplyScalar(0.5);\n                const d = new THREE.Vector2(Math.abs(pos.x - obsPos.x) - half.x, Math.abs(pos.y - obsPos.y) - half.y);\n                if (Math.max(d.x, d.y) < th) {\n                    const localPos = pos.clone().sub(obsPos);\n                    if (Math.abs(localPos.x) / half.x > Math.abs(localPos.y) / half.y) {\n                        localPos.x = Math.sign(localPos.x || 1) * half.x;\n                    } else {\n                        localPos.y = Math.sign(localPos.y || 1) * half.y;\n                    }\n                    return { pos: obsPos.clone().add(localPos), type: 'static' };\n                }\n            }\n        }\n        \n        return null;\n    }",
+                "replace": "    findAnchor(pos: THREE.Vector2, ignoreIndices?: number[]): any {\n        const bx=11.8, by=6.8, th=0.5;\n        if (Math.abs(pos.x)>bx-th || Math.abs(pos.y)>by-th) return { pos: pos.clone().clamp(new THREE.Vector2(-bx,-by), new THREE.Vector2(bx,by)), type: 'static' };\n        \n        const ignoreSet = new Set(ignoreIndices || []);\n\n        let pIdx = -1;\n        let minDistSq = 1.0;\n        for (let i = 0; i < this.numParticles; i++) {\n            if (!this.particleActive[i] || ignoreSet.has(i)) continue;\n            const px = this.particles[i*8], py = this.particles[i*8+1];\n            const distSq = (px - pos.x)**2 + (py - pos.y)**2;\n            if (distSq < minDistSq) {\n                minDistSq = distSq;\n                pIdx = i;\n            }\n        }\n\n        if (pIdx !== -1) {\n            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);\n            if (!ent || ent.attachable) {\n                const pPos = this.getParticlePos(pIdx);\n                const radius = this.particles[pIdx*8+7];\n                const nodeRadius = 0.04;\n                const dir = pos.clone().sub(pPos);\n                if (dir.lengthSq() === 0) dir.set(1, 0);\n                dir.normalize();\n                const surfacePos = pPos.clone().add(dir.multiplyScalar(radius + nodeRadius));\n                return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };\n            }\n        }\n\n        const statics = world.with('sdfCollider', 'position');\n        const staticArr = [...statics];\n\n        for (let i = 0; i < this.numObstacles; i++) {\n            const ent = staticArr[i];\n            if (ent && !ent.attachable) continue;\n\n            const off = i * 8;\n            const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);\n            const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);\n            const type = new Uint32Array(this.obstacles.buffer)[off+4];\n            \n            if (type === 0) {\n                if (pos.distanceTo(obsPos) < obsSize.x + th) {\n                    const dir = pos.clone().sub(obsPos);\n                    if (dir.lengthSq() === 0) dir.set(1, 0);\n                    const surfacePos = obsPos.clone().add(dir.normalize().multiplyScalar(obsSize.x));\n                    return { pos: surfacePos, type: 'static' };\n                }\n            } else {\n                const rotation = this.obstacles[off+5];\n                const s = Math.sin(-rotation);\n                const c = Math.cos(-rotation);\n                const dx = pos.x - obsPos.x;\n                const dy = pos.y - obsPos.y;\n                const localX = dx * c - dy * s;\n                const localY = dx * s + dy * c;\n\n                const half = obsSize.clone().multiplyScalar(0.5);\n                const d = new THREE.Vector2(Math.abs(localX) - half.x, Math.abs(localY) - half.y);\n                if (Math.max(d.x, d.y) < th) {\n                    let attachX = localX;\n                    let attachY = localY;\n                    if (Math.abs(localX) / half.x > Math.abs(localY) / half.y) {\n                        attachX = Math.sign(localX || 1) * half.x;\n                    } else {\n                        attachY = Math.sign(localY || 1) * half.y;\n                    }\n                    \n                    const sr = Math.sin(rotation);\n                    const cr = Math.cos(rotation);\n                    const worldAttachX = obsPos.x + attachX * cr - attachY * sr;\n                    const worldAttachY = obsPos.y + attachX * sr + attachY * cr;\n\n                    return { pos: new THREE.Vector2(worldAttachX, worldAttachY), type: 'static' };\n                }\n            }\n        }\n        \n        return null;\n    }"
+              },
+              {
+                "find": "    pinActiveRope(rope: any, anchor: any) {\n        const last = rope.indices[rope.indices.length-1]; \n        this.setParticle(last, anchor.pos, anchor.type==='static'?0:1/CONFIG.ROPE_NODE_MASS);\n        \n        if (anchor.type==='particle') {\n            const extraC = this.allocConstraint();\n            if (extraC !== -1) {\n                this.constraintVisible[extraC] = 0;\n                const color = this.assignColor(last, anchor.targetIdx);\n                this.setDistConstraint(extraC, last, anchor.targetIdx, anchor.distance + 0.02, 0, color);\n                rope.anchorConstraints.push(extraC);\n            }\n        }\n        \n        rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));\n        this.activeRope = null; \n        this.syncGPU();\n    }",
+                "replace": "    pinActiveRope(rope: any, anchor: any) {\n        const last = rope.indices[rope.indices.length-1]; \n        this.setParticle(last, anchor.pos, anchor.type==='static'?0:1/CONFIG.ROPE_NODE_MASS);\n        \n        if (anchor.type==='particle') {\n            const extraC = this.allocConstraint();\n            if (extraC !== -1) {\n                this.constraintVisible[extraC] = 0;\n                const color = this.assignColor(last, anchor.targetIdx);\n                this.setDistConstraint(extraC, last, anchor.targetIdx, anchor.distance + 0.02, 0, color);\n                rope.anchorConstraints.push(extraC);\n            }\n        }\n        \n        rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));\n        this.activeRope = null; \n        this.syncGPU();\n    }\n\n    freeActiveRope() {\n        if (!this.activeRope) return;\n        const rope = this.activeRope;\n        rope.indices.forEach((idx: number) => this.setParticleFree(idx, false));\n        this.activeRope = null;\n        this.syncGPU();\n    }"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Fix rope placement & add snapping gizmo",
+          "text": "Corrected the logical overlap where the building-rope actively collided with itself during physics placement checks. Bounding box anchoring logic has been refactored to support complex rotation transformations. Added an interactive visual cursor (green/orange ring gizmo) that previews whether the rope will end anchored to a rigid body or unattached in empty space."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "78179c9fef8e062ce479a9f74774b5f414ca8035ab7d1dd21053217757c58bc9",
+      "id": "8563aae8-3cac-40f0-8866-e8ec4b722d6a",
+      "timestamp": 1771602474747
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Scaled down the interactive gizmo by 50% for precision, and implemented full visual and functional support for the `cut_line` tool. The gizmo now snaps accurately to the nearest string with a red indicator, allowing you to slice individual constraints cleanly.",
+        "base_version": "0.0.116",
+        "version": "0.0.117",
+        "files": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "        const gizmoGeo = new THREE.RingGeometry(0.2, 0.3, 16);\n        const gizmoMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8, depthTest: false });",
+                "replace": "        const gizmoGeo = new THREE.RingGeometry(0.1, 0.15, 16);\n        const gizmoMat = new THREE.MeshBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.8, depthTest: false });"
+              },
+              {
+                "find": "            if (this.tool === 'build_line') {\n                const ignore = this.physics.activeRope ? this.physics.activeRope.indices : undefined;\n                const anchor = this.physics.findAnchor(this.mouseWorld, ignore);\n                if (anchor) {\n                    this.anchorGizmo.position.set(anchor.pos.x, anchor.pos.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0x00ff00);\n                } else {\n                    this.anchorGizmo.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0xffaa00);\n                }\n                this.anchorGizmo.visible = true;\n            } else {\n                this.anchorGizmo.visible = false;\n            }",
+                "replace": "            if (this.tool === 'build_line') {\n                const ignore = this.physics.activeRope ? this.physics.activeRope.indices : undefined;\n                const anchor = this.physics.findAnchor(this.mouseWorld, ignore);\n                if (anchor) {\n                    this.anchorGizmo.position.set(anchor.pos.x, anchor.pos.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0x00ff00);\n                } else {\n                    this.anchorGizmo.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0xffaa00);\n                }\n                this.anchorGizmo.visible = true;\n            } else if (this.tool === 'cut_line') {\n                const intersection = this.physics.findIntersectingConstraint(this.mouseWorld, 0.5);\n                if (intersection) {\n                    this.anchorGizmo.position.set(intersection.proj.x, intersection.proj.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0xff0000);\n                } else {\n                    this.anchorGizmo.position.set(this.mouseWorld.x, this.mouseWorld.y, 0.2);\n                    (this.anchorGizmo.material as THREE.MeshBasicMaterial).color.setHex(0x555555);\n                }\n                this.anchorGizmo.visible = true;\n            } else {\n                this.anchorGizmo.visible = false;\n            }"
+              },
+              {
+                "find": "            } else {\n                const startAnchor = anchor || { pos: mWorld.clone(), type: 'loose' };\n                this.physics.createRope(startAnchor);\n            }\n        } else if (this.tool === 'select') {",
+                "replace": "            } else {\n                const startAnchor = anchor || { pos: mWorld.clone(), type: 'loose' };\n                this.physics.createRope(startAnchor);\n            }\n        } else if (this.tool === 'cut_line') {\n            const intersection = this.physics.findIntersectingConstraint(mWorld, 0.5);\n            if (intersection) {\n                this.physics.freeConstraint(intersection.index);\n                this.physics.syncGPU();\n                this.physics.updateVisuals();\n            }\n        } else if (this.tool === 'select') {"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    findIntersectingConstraint(pos: THREE.Vector2, radius: number) {\n        const uv = new Uint32Array(this.distConstraints.buffer);\n        let closest = -1;\n        let minDist = radius;\n        for(let i=0; i<this.numDistConstraints; i++) {\n            if (this.constraintVisible[i] === 0) continue;\n            const a = uv[i*8], b = uv[i*8+1];\n            if (a === b) continue;\n            const pA = new THREE.Vector2(this.particles[a*8], this.particles[a*8+1]);\n            const pB = new THREE.Vector2(this.particles[b*8], this.particles[b*8+1]);\n            const l2 = pA.distanceToSquared(pB);\n            if (l2 === 0) continue;\n            let t = ((pos.x - pA.x) * (pB.x - pA.x) + (pos.y - pA.y) * (pB.y - pA.y)) / l2;\n            t = Math.max(0, Math.min(1, t));\n            const proj = new THREE.Vector2(pA.x + t * (pB.x - pA.x), pA.y + t * (pB.y - pA.y));\n            const d = pos.distanceTo(proj);\n            if (d < minDist) {\n                minDist = d;\n                closest = i;\n            }\n        }\n        return closest;\n    }",
+                "replace": "    findIntersectingConstraint(pos: THREE.Vector2, radius: number) {\n        const uv = new Uint32Array(this.distConstraints.buffer);\n        let closest = -1;\n        let minDist = radius;\n        const bestProj = new THREE.Vector2();\n        for(let i=0; i<this.numDistConstraints; i++) {\n            if (this.constraintVisible[i] === 0) continue;\n            const a = uv[i*8], b = uv[i*8+1];\n            if (a === b) continue;\n            const pA = new THREE.Vector2(this.particles[a*8], this.particles[a*8+1]);\n            const pB = new THREE.Vector2(this.particles[b*8], this.particles[b*8+1]);\n            const l2 = pA.distanceToSquared(pB);\n            if (l2 === 0) continue;\n            let t = ((pos.x - pA.x) * (pB.x - pA.x) + (pos.y - pA.y) * (pB.y - pA.y)) / l2;\n            t = Math.max(0, Math.min(1, t));\n            const proj = new THREE.Vector2(pA.x + t * (pB.x - pA.x), pA.y + t * (pB.y - pA.y));\n            const d = pos.distanceTo(proj);\n            if (d < minDist) {\n                minDist = d;\n                closest = i;\n                bestProj.copy(proj);\n            }\n        }\n        return closest !== -1 ? { index: closest, proj: bestProj } : null;\n    }"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Shrink gizmo and apply snapping UI to cut tool",
+          "text": "The gizmo radius has been shrunk by 50% for better UI clarity. Hooked up the `cut_line` tool implementation so users can dynamically highlight and sever rope constraints directly. Modified the constraint intersection solver to return the exact projection point, allowing the gizmo to 'snap' directly onto strings visually when hovering nearby."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "59cdb6bc1ed46f2ea0b3e5c1139ae0f0d6358016780eacca3f4395028a129b17",
+      "id": "38b02cb0-3999-494e-83a2-7c395a623dad",
+      "timestamp": 1771602848288
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Implemented object dragging in the Select tool, split the 'Create Obj' menu into Static and Dynamic, and added a fully functional PBD friction system. Friction can now be configured per-object in the UI, affecting both string-to-string and string-to-obstacle physical interactions.",
+        "base_version": "0.0.117",
+        "version": "0.0.118",
+        "files": [
+          {
+            "filename": "src/ecs.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    attachable: boolean;\n    selected?: boolean;\n    tags: string[];\n};",
+                "replace": "    attachable: boolean;\n    friction?: number;\n    selected?: boolean;\n    tags: string[];\n};"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/core/EntityFactory.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    const ent: Entity = {\n        id, name, position: pos.clone(), rotation: data?.rotation || 0, scale: new THREE.Vector2(0.2, 0.2),\n        sdfCollider: type === 'static' ? { type: shape, size: shape === 'circle' ? new THREE.Vector2(initialRadius, 0) : initialSize.clone() } : undefined,\n        physics: type === 'dynamic' ? { bodyType: 'dynamic', mass: 10, invMass: 0.1, radius: initialRadius, particleIdx: pIdx } : undefined,\n        renderable: { mesh }, attachable: true, tags: [type]\n    };\n    world.add(ent);\n    return ent;\n};",
+                "replace": "    const ent: Entity = {\n        id, name, position: pos.clone(), rotation: data?.rotation || 0, scale: new THREE.Vector2(0.2, 0.2), friction: 0.5,\n        sdfCollider: type === 'static' ? { type: shape, size: shape === 'circle' ? new THREE.Vector2(initialRadius, 0) : initialSize.clone() } : undefined,\n        physics: type === 'dynamic' ? { bodyType: 'dynamic', mass: 10, invMass: 0.1, radius: initialRadius, particleIdx: pIdx } : undefined,\n        renderable: { mesh }, attachable: true, tags: [type]\n    };\n    world.add(ent);\n    return ent;\n};"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/physics.wgsl",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "struct Particle {\n    pos: vec2<f32>,\n    oldPos: vec2<f32>,\n    isFree: f32,\n    pad: f32,\n    invMass: f32,\n    radius: f32,\n};",
+                "replace": "struct Particle {\n    pos: vec2<f32>,\n    oldPos: vec2<f32>,\n    isFree: f32,\n    friction: f32,\n    invMass: f32,\n    radius: f32,\n};"
+              },
+              {
+                "find": "        if (d < p.radius) {\n            let h = 0.01;\n            let dx = getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d;\n            let dy = getSDF(p.pos + vec2<f32>(0.0, h), obs) - d;\n            let n = normalize(vec2<f32>(dx, dy));\n            p.pos = p.pos + n * (p.radius - d);\n            p.oldPos = p.pos;\n        }\n    }\n    particles[i].pos = p.pos;\n}",
+                "replace": "        if (d < p.radius) {\n            let h = 0.01;\n            let dx = getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d;\n            let dy = getSDF(p.pos + vec2<f32>(0.0, h), obs) - d;\n            let n = normalize(vec2<f32>(dx, dy));\n            let overlap = p.radius - d;\n            p.pos = p.pos + n * overlap;\n            \n            let dp = p.pos - p.oldPos;\n            let dpT = dp - dot(dp, n) * n;\n            let dpTLen = length(dpT);\n            if (dpTLen > 0.0001) {\n                let fric = obs.extra.y;\n                let force = min(fric * overlap, dpTLen);\n                p.oldPos += (dpT / dpTLen) * force;\n            }\n        }\n    }\n    particles[i].pos = p.pos;\n}"
+              },
+              {
+                "find": "        if (dist < minDist && dist > 0.0001) {\n            let w2 = getInvMass(j);\n            let wSum = w1 + w2;\n            if (wSum > 0.0) { \n                let n = delta / dist; let overlap = minDist - dist; \n                pi.pos += n * (overlap / wSum) * w1 * 0.5; \n            }\n        }\n    }\n    particles[i].pos = pi.pos;\n}",
+                "replace": "        if (dist < minDist && dist > 0.0001) {\n            let w2 = getInvMass(j);\n            let wSum = w1 + w2;\n            if (wSum > 0.0) { \n                let n = delta / dist; let overlap = minDist - dist; \n                pi.pos += n * (overlap / wSum) * w1 * 0.5; \n                \n                let dp = pi.pos - pi.oldPos;\n                let dpT = dp - dot(dp, n) * n;\n                let dpTLen = length(dpT);\n                if (dpTLen > 0.0001) {\n                    let fric = (pi.friction + pj.friction) * 0.5;\n                    let force = min(fric * overlap, dpTLen);\n                    pi.oldPos += (dpT / dpTLen) * force * (w1 / wSum);\n                }\n            }\n        }\n    }\n    particles[i].pos = pi.pos;\n}"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    setParticle(i: number, pos: THREE.Vector2, invMass: number) {\n        const off = i * 8; \n        this.particles[off] = pos.x; \n        this.particles[off+1] = pos.y; \n        this.particles[off+2] = pos.x; \n        this.particles[off+3] = pos.y; \n        this.particles[off+4] = 0.0; \n        this.particles[off+5] = 0.0; \n        this.particles[off+6] = invMass; \n        this.particles[off+7] = 0.04; \n        this.dirtyParticles.add(i);\n    }",
+                "replace": "    setParticle(i: number, pos: THREE.Vector2, invMass: number, friction: number = 0.5) {\n        const off = i * 8; \n        this.particles[off] = pos.x; \n        this.particles[off+1] = pos.y; \n        this.particles[off+2] = pos.x; \n        this.particles[off+3] = pos.y; \n        this.particles[off+4] = 0.0; \n        this.particles[off+5] = friction; \n        this.particles[off+6] = invMass; \n        this.particles[off+7] = 0.04; \n        this.dirtyParticles.add(i);\n    }\n    \n    setParticleFriction(i: number, friction: number) {\n        this.particles[i * 8 + 5] = friction;\n        this.dirtyParticles.add(i);\n    }"
+              },
+              {
+                "find": "            this.obstacles[off + 5] = ent.rotation;\n            this.obstacles[off + 6] = ent.scale.x; \n            this.obstacles[off + 7] = ent.scale.y;\n            count++;",
+                "replace": "            this.obstacles[off + 5] = ent.rotation;\n            this.obstacles[off + 6] = ent.scale.x; \n            this.obstacles[off + 7] = ent.friction ?? 0.5;\n            count++;"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    placement: PlacementState = null;\n    selectedEntityId: string | null = null;\n\n    ghostMesh: THREE.Mesh | null = null;",
+                "replace": "    placement: PlacementState = null;\n    selectedEntityId: string | null = null;\n    draggedEntity: Entity | null = null;\n    dragOffset = new THREE.Vector2();\n\n    ghostMesh: THREE.Mesh | null = null;"
+              },
+              {
+                "find": "        this.onMouseDown = this.onMouseDown.bind(this);\n        this.onWheel = this.onWheel.bind(this);\n        this.onContextMenu = this.onContextMenu.bind(this);\n        this.animate = this.animate.bind(this);\n    }",
+                "replace": "        this.onMouseDown = this.onMouseDown.bind(this);\n        this.onMouseUp = this.onMouseUp.bind(this);\n        this.onWheel = this.onWheel.bind(this);\n        this.onContextMenu = this.onContextMenu.bind(this);\n        this.animate = this.animate.bind(this);\n    }"
+              },
+              {
+                "find": "        window.addEventListener('mousemove', this.onMouseMove);\n        window.addEventListener('mousedown', this.onMouseDown);\n        window.addEventListener('contextmenu', this.onContextMenu);\n        window.addEventListener('wheel', this.onWheel);",
+                "replace": "        window.addEventListener('mousemove', this.onMouseMove);\n        window.addEventListener('mousedown', this.onMouseDown);\n        window.addEventListener('mouseup', this.onMouseUp);\n        window.addEventListener('contextmenu', this.onContextMenu);\n        window.addEventListener('wheel', this.onWheel);"
+              },
+              {
+                "find": "        this.alive = false;\n        window.removeEventListener('mousemove', this.onMouseMove);\n        window.removeEventListener('mousedown', this.onMouseDown);\n        window.removeEventListener('contextmenu', this.onContextMenu);\n        window.removeEventListener('wheel', this.onWheel);",
+                "replace": "        this.alive = false;\n        window.removeEventListener('mousemove', this.onMouseMove);\n        window.removeEventListener('mousedown', this.onMouseDown);\n        window.removeEventListener('mouseup', this.onMouseUp);\n        window.removeEventListener('contextmenu', this.onContextMenu);\n        window.removeEventListener('wheel', this.onWheel);"
+              },
+              {
+                "find": "    onMouseMove(e: MouseEvent) {\n        const worldPos = getMouseWorld(e, this.canvas, BOUNDS);\n        this.mouseWorld.copy(worldPos);\n    }",
+                "replace": "    onMouseMove(e: MouseEvent) {\n        const worldPos = getMouseWorld(e, this.canvas, BOUNDS);\n        this.mouseWorld.copy(worldPos);\n        \n        if (this.draggedEntity && this.tool === 'select') {\n            const newPos = this.mouseWorld.clone().add(this.dragOffset);\n            this.draggedEntity.position.copy(newPos);\n            if (this.draggedEntity.physics?.particleIdx !== undefined) {\n                this.physics.setParticlePos(this.draggedEntity.physics.particleIdx, newPos);\n                this.physics.syncGPU();\n            }\n            if (this.draggedEntity.renderable) {\n                this.draggedEntity.renderable.mesh.position.set(newPos.x, newPos.y, -0.1);\n            }\n        }\n    }"
+              },
+              {
+                "find": "        } else if (this.tool === 'select') {\n            const pIdx = this.physics.getNearestParticle(mWorld, 0.5);\n            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);\n            if (ent) {\n                this.onSelectEntity?.(ent);\n            } else {\n                const statEnt = [...world.entities].find(e => e.sdfCollider && e.position.distanceTo(mWorld) < 1.5);\n                this.onSelectEntity?.(statEnt || null);\n            }\n        }\n    }",
+                "replace": "        } else if (this.tool === 'select') {\n            const pIdx = this.physics.getNearestParticle(mWorld, 0.5);\n            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);\n            if (ent) {\n                this.onSelectEntity?.(ent);\n                this.draggedEntity = ent;\n                this.dragOffset.copy(ent.position).sub(mWorld);\n            } else {\n                const statEnt = [...world.entities].find(e => e.sdfCollider && e.position.distanceTo(mWorld) < 1.5);\n                this.onSelectEntity?.(statEnt || null);\n                if (statEnt) {\n                    this.draggedEntity = statEnt;\n                    this.dragOffset.copy(statEnt.position).sub(mWorld);\n                }\n            }\n        }\n    }\n\n    onMouseUp(e: MouseEvent) {\n        if (this.draggedEntity) {\n            this.draggedEntity = null;\n        }\n    }"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/main.tsx",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    const [isLevelMenuOpen, setIsLevelMenuOpen] = useState(false);\n    const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);\n    const [placement, setPlacement] = useState<PlacementState>(null);\n    const [fps, setFps] = useState(0);",
+                "replace": "    const [isLevelMenuOpen, setIsLevelMenuOpen] = useState(false);\n    const [isStaticMenuOpen, setIsStaticMenuOpen] = useState(false);\n    const [isDynamicMenuOpen, setIsDynamicMenuOpen] = useState(false);\n    const [placement, setPlacement] = useState<PlacementState>(null);\n    const [fps, setFps] = useState(0);"
+              },
+              {
+                "find": "    useEffect(() => { \n        if (tool !== 'create_obj') {\n            setPlacement(null);\n            setIsCreateMenuOpen(false);\n        }\n        if (engineRef.current) engineRef.current.tool = tool; \n    }, [tool]);",
+                "replace": "    useEffect(() => { \n        if (tool !== 'create_obj') {\n            setPlacement(null);\n            setIsStaticMenuOpen(false);\n            setIsDynamicMenuOpen(false);\n        }\n        if (engineRef.current) engineRef.current.tool = tool; \n    }, [tool]);"
+              },
+              {
+                "find": "                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Extra (H/Corner)</span>\n                                            <input type=\"number\" value={selectedEntity.scale.x} onChange={e => { selectedEntity.scale.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                    </div>\n                                )}\n                                <button onClick={() => handleDelete(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>\n                            </div>\n                        </div>\n                    )}\n                </div>",
+                "replace": "                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Extra (H/Corner)</span>\n                                            <input type=\"number\" value={selectedEntity.scale.x} onChange={e => { selectedEntity.scale.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                    </div>\n                                )}\n                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                    <span>Friction</span>\n                                    <input type=\"number\" value={selectedEntity.friction ?? 0.5} onChange={e => { \n                                        selectedEntity.friction = Number(e.target.value); \n                                        if (selectedEntity.physics?.particleIdx !== undefined) {\n                                            engineRef.current?.physics.setParticleFriction(selectedEntity.physics.particleIdx, selectedEntity.friction);\n                                            engineRef.current?.physics.syncGPU();\n                                        }\n                                        setSelectedEntity({...selectedEntity}); \n                                    }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n                                </div>\n                                <button onClick={() => handleDelete(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>\n                            </div>\n                        </div>\n                    )}\n                </div>"
+              },
+              {
+                "find": "                        <button onClick={() => setTool('build_line')} style={{ background: tool === 'build_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>ROPE</button>\n                        <div style={{ position: 'relative' }}>\n                            <button onClick={() => { setTool('create_obj'); setIsCreateMenuOpen(!isCreateMenuOpen); }} style={{ background: tool === 'create_obj' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CREATE OBJ ▾</button>\n                            {isCreateMenuOpen && tool === 'create_obj' && (\n                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'rounded_box'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Rounded Box</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'capsule'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Uneven Capsule</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'vesica'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Vesica</button>\n                                    <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>\n                                </div>\n                            )}\n                        </div>\n                        <button onClick={() => setTool('cut_line')} style={{ background: tool === 'cut_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CUT</button>",
+                "replace": "                        <button onClick={() => setTool('build_line')} style={{ background: tool === 'build_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>ROPE</button>\n                        <div style={{ position: 'relative' }}>\n                            <button onClick={() => { setTool('create_obj'); setIsStaticMenuOpen(!isStaticMenuOpen); setIsDynamicMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'static' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>STATIC ▾</button>\n                            {isStaticMenuOpen && tool === 'create_obj' && (\n                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'rounded_box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Rounded Box</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'capsule'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Uneven Capsule</button>\n                                    <button onClick={() => { setPlacement({type: 'static', shape: 'vesica'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Vesica</button>\n                                </div>\n                            )}\n                        </div>\n                        <div style={{ position: 'relative' }}>\n                            <button onClick={() => { setTool('create_obj'); setIsDynamicMenuOpen(!isDynamicMenuOpen); setIsStaticMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'dynamic' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>DYNAMIC ▾</button>\n                            {isDynamicMenuOpen && tool === 'create_obj' && (\n                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>\n                                    <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsDynamicMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>\n                                </div>\n                            )}\n                        </div>\n                        <button onClick={() => setTool('cut_line')} style={{ background: tool === 'cut_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CUT</button>"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Implement Drag&Drop, Split Menus, and Add Friction",
+          "text": "1. Mouse drag & drop support is fully active in the Select tool (for both dynamic and static entities) smoothly offsetting from the grab-point.\n2. The generic `CREATE OBJ` menu is split cleanly into `STATIC` and `DYNAMIC` toggle trees in the UI.\n3. The WGSL collision resolver now applies mathematically robust PBD Coulomb friction per-particle and per-obstacle. A 'Friction' editable property has been added to the editor panel mapped directly to the GPU buffers."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/ecs.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/core/EntityFactory.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/physics.wgsl",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/webPhysics.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/main.tsx",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "9655a580da27e15f7628d62d0e4bae2fc250c20c129b28e2daca42631258876f",
+      "id": "f5ea9696-2865-485e-affa-2a4c4aa70ca4",
+      "timestamp": 1771605241990
     }
   ]
 }

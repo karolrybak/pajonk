@@ -22,6 +22,7 @@ export type Entity = {
         mesh: THREE.Object3D;
     };
     attachable: boolean;
+    friction?: number;
     selected?: boolean;
     tags: string[];
 };

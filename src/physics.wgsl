@@ -2,7 +2,7 @@ struct Particle {
     pos: vec2<f32>,
     oldPos: vec2<f32>,
     isFree: f32,
-    pad: f32,
+    friction: f32,
     invMass: f32,
     radius: f32,
 };
@@ -189,8 +189,17 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
             let dx = getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d;
             let dy = getSDF(p.pos + vec2<f32>(0.0, h), obs) - d;
             let n = normalize(vec2<f32>(dx, dy));
-            p.pos = p.pos + n * (p.radius - d);
-            p.oldPos = p.pos;
+            let overlap = p.radius - d;
+            p.pos = p.pos + n * overlap;
+            
+            let dp = p.pos - p.oldPos;
+            let dpT = dp - dot(dp, n) * n;
+            let dpTLen = length(dpT);
+            if (dpTLen > 0.0001) {
+                let fric = obs.extra.y;
+                let force = min(fric * overlap, dpTLen);
+                p.oldPos += (dpT / dpTLen) * force;
+            }
         }
     }
     particles[i].pos = p.pos;
@@ -213,6 +222,15 @@ fn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
             if (wSum > 0.0) { 
                 let n = delta / dist; let overlap = minDist - dist; 
                 pi.pos += n * (overlap / wSum) * w1 * 0.5; 
+                
+                let dp = pi.pos - pi.oldPos;
+                let dpT = dp - dot(dp, n) * n;
+                let dpTLen = length(dpT);
+                if (dpTLen > 0.0001) {
+                    let fric = (pi.friction + pj.friction) * 0.5;
+                    let force = min(fric * overlap, dpTLen);
+                    pi.oldPos += (dpT / dpTLen) * force * (w1 / wSum);
+                }
             }
         }
     }

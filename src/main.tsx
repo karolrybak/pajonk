@@ -16,7 +16,8 @@ const App = () => {
     const [showPanels, setShowPanels] = useState({ list: true, props: true });
     const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
     const [isLevelMenuOpen, setIsLevelMenuOpen] = useState(false);
-    const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+    const [isStaticMenuOpen, setIsStaticMenuOpen] = useState(false);
+    const [isDynamicMenuOpen, setIsDynamicMenuOpen] = useState(false);
     const [placement, setPlacement] = useState<PlacementState>(null);
     const [fps, setFps] = useState(0);
 
@@ -34,7 +35,8 @@ const App = () => {
     useEffect(() => { 
         if (tool !== 'create_obj') {
             setPlacement(null);
-            setIsCreateMenuOpen(false);
+            setIsStaticMenuOpen(false);
+            setIsDynamicMenuOpen(false);
         }
         if (engineRef.current) engineRef.current.tool = tool; 
     }, [tool]);
@@ -132,6 +134,17 @@ const App = () => {
                                         </div>
                                     </div>
                                 )}
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <span>Friction</span>
+                                    <input type="number" value={selectedEntity.friction ?? 0.5} onChange={e => { 
+                                        selectedEntity.friction = Number(e.target.value); 
+                                        if (selectedEntity.physics?.particleIdx !== undefined) {
+                                            engineRef.current?.physics.setParticleFriction(selectedEntity.physics.particleIdx, selectedEntity.friction);
+                                            engineRef.current?.physics.syncGPU();
+                                        }
+                                        setSelectedEntity({...selectedEntity}); 
+                                    }} step="0.1" style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>
+                                </div>
                                 <button onClick={() => handleDelete(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>
                             </div>
                         </div>
@@ -143,15 +156,22 @@ const App = () => {
                         <button onClick={() => setTool('select')} style={{ background: tool === 'select' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>SELECT</button>
                         <button onClick={() => setTool('build_line')} style={{ background: tool === 'build_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>ROPE</button>
                         <div style={{ position: 'relative' }}>
-                            <button onClick={() => { setTool('create_obj'); setIsCreateMenuOpen(!isCreateMenuOpen); }} style={{ background: tool === 'create_obj' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CREATE OBJ ▾</button>
-                            {isCreateMenuOpen && tool === 'create_obj' && (
+                            <button onClick={() => { setTool('create_obj'); setIsStaticMenuOpen(!isStaticMenuOpen); setIsDynamicMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'static' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>STATIC ▾</button>
+                            {isStaticMenuOpen && tool === 'create_obj' && (
                                 <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>
-                                    <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>
-                                    <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>
-                                    <button onClick={() => { setPlacement({type: 'static', shape: 'rounded_box'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Rounded Box</button>
-                                    <button onClick={() => { setPlacement({type: 'static', shape: 'capsule'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Uneven Capsule</button>
-                                    <button onClick={() => { setPlacement({type: 'static', shape: 'vesica'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Vesica</button>
-                                    <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsCreateMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>
+                                    <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>
+                                    <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>
+                                    <button onClick={() => { setPlacement({type: 'static', shape: 'rounded_box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Rounded Box</button>
+                                    <button onClick={() => { setPlacement({type: 'static', shape: 'capsule'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Uneven Capsule</button>
+                                    <button onClick={() => { setPlacement({type: 'static', shape: 'vesica'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Vesica</button>
+                                </div>
+                            )}
+                        </div>
+                        <div style={{ position: 'relative' }}>
+                            <button onClick={() => { setTool('create_obj'); setIsDynamicMenuOpen(!isDynamicMenuOpen); setIsStaticMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'dynamic' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>DYNAMIC ▾</button>
+                            {isDynamicMenuOpen && tool === 'create_obj' && (
+                                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>
+                                    <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsDynamicMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>
                                 </div>
                             )}
                         </div>
