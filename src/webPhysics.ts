@@ -184,6 +184,11 @@ export class WebPhysics {
         this.particles[i * 8 + 5] = friction;
         this.dirtyParticles.add(i);
     }
+
+    setParticleInvMass(i: number, invMass: number) {
+        this.particles[i * 8 + 6] = invMass;
+        this.dirtyParticles.add(i);
+    }
     
     setParticleFree(i: number, isFree: boolean) {
         this.particles[i * 8 + 4] = isFree ? 1.0 : 0.0;

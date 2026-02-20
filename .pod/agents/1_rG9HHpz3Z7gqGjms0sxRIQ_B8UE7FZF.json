@@ -609,6 +609,68 @@
       "checksum": "9655a580da27e15f7628d62d0e4bae2fc250c20c129b28e2daca42631258876f",
       "id": "f5ea9696-2865-485e-affa-2a4c4aa70ca4",
       "timestamp": 1771605241990
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Updated the UI with explicit min/max/step constraints for all numeric inputs to prevent invalid physical states (like zero mass or negative radius). I also added an editable 'Mass' property for dynamic objects, which correctly synchronizes the inverse mass component to the GPU solver in real-time.",
+        "base_version": "0.0.118",
+        "version": "0.0.119",
+        "files": [
+          {
+            "filename": "src/webPhysics.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    setParticleFriction(i: number, friction: number) {\n        this.particles[i * 8 + 5] = friction;\n        this.dirtyParticles.add(i);\n    }",
+                "replace": "    setParticleFriction(i: number, friction: number) {\n        this.particles[i * 8 + 5] = friction;\n        this.dirtyParticles.add(i);\n    }\n\n    setParticleInvMass(i: number, invMass: number) {\n        this.particles[i * 8 + 6] = invMass;\n        this.dirtyParticles.add(i);\n    }"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/main.tsx",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                    <span>Rotation</span>\n                                    <input type=\"number\" value={Math.round(THREE.MathUtils.radToDeg(selectedEntity.rotation))} onChange={e => { selectedEntity.rotation = THREE.MathUtils.degToRad(Number(e.target.value)); if (selectedEntity.renderable) selectedEntity.renderable.mesh.rotation.z = selectedEntity.rotation; setSelectedEntity({...selectedEntity}); }} step=\"5\" style={{ width: 104, background: '#000', color: '#fff', border: '1px solid #333', padding: '2px' }}/>\n                                </div>",
+                "replace": "                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                    <span>Rotation</span>\n                                    <input type=\"number\" value={Math.round(THREE.MathUtils.radToDeg(selectedEntity.rotation))} onChange={e => { selectedEntity.rotation = THREE.MathUtils.degToRad(Number(e.target.value)); if (selectedEntity.renderable) selectedEntity.renderable.mesh.rotation.z = selectedEntity.rotation; setSelectedEntity({...selectedEntity}); }} step=\"1\" style={{ width: 104, background: '#000', color: '#fff', border: '1px solid #333', padding: '2px' }}/>\n                                </div>"
+              },
+              {
+                "find": "                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Width / R1</span>\n                                            <input type=\"number\" value={selectedEntity.sdfCollider.size.x} onChange={e => { \n                                                selectedEntity.sdfCollider!.size.x = Number(e.target.value); \n                                                setSelectedEntity({...selectedEntity}); \n                                            }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Height / R2</span>\n                                            <input type=\"number\" value={selectedEntity.sdfCollider.size.y} onChange={e => { \n                                                selectedEntity.sdfCollider!.size.y = Number(e.target.value); \n                                                setSelectedEntity({...selectedEntity}); \n                                            }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Extra (H/Corner)</span>\n                                            <input type=\"number\" value={selectedEntity.scale.x} onChange={e => { selectedEntity.scale.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>",
+                "replace": "                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Width / R1</span>\n                                            <input type=\"number\" min=\"0.1\" max=\"100\" step=\"0.1\" value={selectedEntity.sdfCollider.size.x} onChange={e => { \n                                                selectedEntity.sdfCollider!.size.x = Number(e.target.value); \n                                                setSelectedEntity({...selectedEntity}); \n                                            }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Height / R2</span>\n                                            <input type=\"number\" min=\"0.1\" max=\"100\" step=\"0.1\" value={selectedEntity.sdfCollider.size.y} onChange={e => { \n                                                selectedEntity.sdfCollider!.size.y = Number(e.target.value); \n                                                setSelectedEntity({...selectedEntity}); \n                                            }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>\n                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                            <span>Extra (H/Corner)</span>\n                                            <input type=\"number\" min=\"0\" max=\"100\" step=\"0.1\" value={selectedEntity.scale.x} onChange={e => { selectedEntity.scale.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                                        </div>"
+              },
+              {
+                "find": "                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                    <span>Friction</span>\n                                    <input type=\"number\" value={selectedEntity.friction ?? 0.5} onChange={e => { \n                                        selectedEntity.friction = Number(e.target.value); \n                                        if (selectedEntity.physics?.particleIdx !== undefined) {\n                                            engineRef.current?.physics.setParticleFriction(selectedEntity.physics.particleIdx, selectedEntity.friction);\n                                            engineRef.current?.physics.syncGPU();\n                                        }\n                                        setSelectedEntity({...selectedEntity}); \n                                    }} step=\"0.1\" style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n                                </div>",
+                "replace": "                                {selectedEntity.physics && (\n                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                        <span>Mass</span>\n                                        <input type=\"number\" min=\"0.1\" max=\"1000\" step=\"0.1\" value={selectedEntity.physics.mass} onChange={e => { \n                                            const m = Math.max(0.1, Number(e.target.value));\n                                            selectedEntity.physics!.mass = m;\n                                            selectedEntity.physics!.invMass = 1.0 / m;\n                                            if (selectedEntity.physics!.particleIdx !== undefined) {\n                                                engineRef.current?.physics.setParticleInvMass(selectedEntity.physics.particleIdx, 1.0 / m);\n                                                engineRef.current?.physics.syncGPU();\n                                            }\n                                            setSelectedEntity({...selectedEntity}); \n                                        }} style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n                                    </div>\n                                )}\n                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                                    <span>Friction</span>\n                                    <input type=\"number\" min=\"0\" max=\"2\" step=\"0.05\" value={selectedEntity.friction ?? 0.5} onChange={e => { \n                                        selectedEntity.friction = Number(e.target.value); \n                                        if (selectedEntity.physics?.particleIdx !== undefined) {\n                                            engineRef.current?.physics.setParticleFriction(selectedEntity.physics.particleIdx, selectedEntity.friction);\n                                            engineRef.current?.physics.syncGPU();\n                                        }\n                                        setSelectedEntity({...selectedEntity}); \n                                    }} style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n                                </div>"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Add Mass property and refine UI input constraints",
+          "text": "The dynamic objects now expose a 'Mass' property in the editor panel. Changing this updates the particle's inverse mass in the WebGPU storage buffer. Additionally, all numeric inputs in the property panel now have appropriate 'min', 'max', and 'step' attributes to improve usability and physics stability."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/webPhysics.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/main.tsx",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "51fcdbee1c06bb0fc471146ae9e118a05b20b7e035dd12d2ada7954f62338ec0",
+      "id": "e1a115dc-a698-40e5-8c23-cacc068a7941",
+      "timestamp": 1771605582452
     }
   ]
 }
