@@ -105,8 +105,11 @@ export class WebPhysics {
             this.obstacles[off + 2] = ent.sdfCollider.size.x;
             this.obstacles[off + 3] = ent.sdfCollider.size.y;
             const uv = new Uint32Array(this.obstacles.buffer);
-            uv[off + 4] = ent.sdfCollider.type === 'circle' ? 0 : 1;
+            const typeMap: Record<string, number> = { 'circle': 0, 'box': 1, 'rounded_box': 2, 'capsule': 3, 'vesica': 4 };
+            uv[off + 4] = typeMap[ent.sdfCollider.type] || 0;
             this.obstacles[off + 5] = ent.rotation;
+            this.obstacles[off + 6] = ent.scale.x; 
+            this.obstacles[off + 7] = ent.scale.y;
             count++;
         }
         this.numObstacles = count;
@@ -168,7 +171,7 @@ export class WebPhysics {
 
     update(mousePos: THREE.Vector2) {
         if (!this.ready || this.isReadingBack) return;
-        const dt = 1/60, subs = 12;
+        const dt = 1/60, subs = 8;
         
         const activeIdx = this.dragParticleIdx !== -1 ? this.dragParticleIdx : (this.activeRope ? this.activeRope.indices[this.activeRope.indices.length-1] : -1);
 
@@ -182,7 +185,7 @@ export class WebPhysics {
         
         for (let s = 0; s < subs; s++) {
             const p1 = enc.beginComputePass(); p1.setBindGroup(0, this.bindGroup0!); p1.setPipeline(this.pipelines.integrate!); p1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); p1.end();
-            for (let i = 0; i < 6; i++) {
+            for (let i = 0; i < 4; i++) {
                 const d0 = enc.beginComputePass(); d0.setBindGroup(0, this.bindGroup0!); d0.setPipeline(this.pipelines.solveDistance!); d0.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d0.end();
                 const d1 = enc.beginComputePass(); d1.setBindGroup(0, this.bindGroup1!); d1.setPipeline(this.pipelines.solveDistance!); d1.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d1.end();
                 const at = enc.beginComputePass(); at.setBindGroup(0, this.bindGroup0!); at.setPipeline(this.pipelines.solveAttachments!); at.dispatchWorkgroups(Math.ceil(this.numAttachments/64)); at.end();
@@ -292,6 +295,10 @@ export class WebPhysics {
         
         const pIdx = this.getNearestParticle(pos, 1.0);
         if (pIdx !== -1) {
+            // Check if this particle belongs to an attachable entity
+            const ent = [...world.entities].find(e => e.physics?.particleIdx === pIdx);
+            if (ent && !ent.attachable) return null;
+
             const pPos = this.getParticlePos(pIdx);
             const radius = this.particles[pIdx*8+7];
             const nodeRadius = 0.04;
@@ -302,7 +309,14 @@ export class WebPhysics {
             return { pos: surfacePos, type: 'particle', targetIdx: pIdx, distance: radius + nodeRadius };
         }
 
+        // Map obstacles back to entities for attachment check
+        const statics = world.with('sdfCollider', 'position');
+        const staticArr = [...statics];
+
         for (let i = 0; i < this.numObstacles; i++) {
+            const ent = staticArr[i];
+            if (ent && !ent.attachable) continue;
+
             const off = i * 8;
             const obsPos = new THREE.Vector2(this.obstacles[off], this.obstacles[off+1]);
             const obsSize = new THREE.Vector2(this.obstacles[off+2], this.obstacles[off+3]);

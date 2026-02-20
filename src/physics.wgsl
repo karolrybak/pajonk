@@ -26,7 +26,7 @@ struct Obstacle {
     size: vec2<f32>, 
     type_id: u32,    
     rotation: f32,   
-    padding: vec2<f32>,
+    extra: vec2<f32>,
 };
 
 struct Params {
@@ -54,6 +54,44 @@ fn rotate(v: vec2<f32>, angle: f32) -> vec2<f32> {
     let s = sin(angle);
     let c = cos(angle);
     return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
+}
+
+fn sdRoundedBox(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - b + r;
+    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
+}
+
+fn sdUnevenCapsule(p: vec2<f32>, r1: f32, r2: f32, h: f32) -> f32 {
+    let px = abs(p.x);
+    let b = (r1 - r2) / h;
+    let a = sqrt(max(0.0, 1.0 - b * b));
+    let k = dot(vec2<f32>(px, p.y), vec2<f32>(-b, a));
+    if (k < 0.0) { return length(vec2<f32>(px, p.y)) - r1; }
+    if (k > a * h) { return length(vec2<f32>(px, p.y - h)) - r2; }
+    return dot(vec2<f32>(px, p.y), vec2<f32>(a, b)) - r1;
+}
+
+fn sdVesica(p: vec2<f32>, r: f32, d: f32) -> f32 {
+    let pa = abs(p);
+    let b = sqrt(max(0.0, r * r - d * d));
+    return select(length(pa - vec2<f32>(-d, 0.0)) - r, length(pa - vec2<f32>(0.0, b)), pa.y * d > pa.x * b + d * d);
+}
+
+fn getSDF(p: vec2<f32>, obs: Obstacle) -> f32 {
+    let localP = rotate(p - obs.pos, -obs.rotation);
+    if (obs.type_id == 0u) {
+        return length(localP) - obs.size.x;
+    } else if (obs.type_id == 1u) {
+        let d = abs(localP) - obs.size * 0.5;
+        return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+    } else if (obs.type_id == 2u) {
+        return sdRoundedBox(localP, obs.size * 0.5, obs.extra.x);
+    } else if (obs.type_id == 3u) {
+        return sdUnevenCapsule(localP, obs.size.x, obs.size.y, obs.extra.x);
+    } else if (obs.type_id == 4u) {
+        return sdVesica(localP, obs.size.x, obs.size.y);
+    }
+    return 1000.0;
 }
 
 fn getInvMass(i: u32) -> f32 {
@@ -140,24 +178,14 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
 
     for (var j: u32 = 0u; j < params.numObstacles; j++) {
         let obs = obstacles[j];
-        if (obs.type_id == 0u) { 
-            let toP = p.pos - obs.pos;
-            let dist = length(toP);
-            if (dist < obs.size.x + p.radius) {
-                p.pos = obs.pos + normalize(toP) * (obs.size.x + p.radius);
-                p.oldPos = p.pos;
-            }
-        } else {
-            let localP = rotate(p.pos - obs.pos, -obs.rotation);
-            let half = obs.size * 0.5;
-            let d = abs(localP) - half;
-            let dist = length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
-            if (dist < p.radius) {
-                let n_local = select(vec2<f32>(sign(localP).x, 0.0), vec2<f32>(0.0, sign(localP).y), d.y > d.x);
-                let p_local_fixed = localP + n_local * (p.radius - dist);
-                p.pos = obs.pos + rotate(p_local_fixed, obs.rotation);
-                p.oldPos = p.pos;
-            }
+        let d = getSDF(p.pos, obs);
+        if (d < p.radius) {
+            let h = 0.01;
+            let dx = getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d;
+            let dy = getSDF(p.pos + vec2<f32>(0.0, h), obs) - d;
+            let n = normalize(vec2<f32>(dx, dy));
+            p.pos = p.pos + n * (p.radius - d);
+            p.oldPos = p.pos;
         }
     }
     particles[i].pos = p.pos;
