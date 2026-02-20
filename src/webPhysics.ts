@@ -52,7 +52,7 @@ export class WebPhysics {
         if (!device) throw new Error('WebGPU device not found');
         this.device = device;
 
-        const shaderCode = await (await fetch('/src/physics.wgsl')).text();
+        const shaderCode = await (await fetch(new URL('./physics.wgsl', import.meta.url))).text();
         const shaderModule = device.createShaderModule({ code: shaderCode });
 
         this.particleBuffer = device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
