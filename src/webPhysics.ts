@@ -89,8 +89,8 @@ export class WebPhysics {
         const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
         const createPipe = (entry: string) => device.createComputePipeline({ layout, compute: { module: shaderModule, entryPoint: entry } });
 
-        ['integrate', 'solveDistance', 'solveAttachments', 'solveParticleCollisions', 'solveCollisions'].forEach(e => this.pipelines[e] = createPipe(e));
-        
+        ['integrate', 'solveDistance', 'solveAttachments', 'solveParticleCollisions', 'solveCollisions', 'applyFriction', 'applyParticleFriction'].forEach(e => this.pipelines[e] = createPipe(e));
+
         const constraintGeo = new THREE.BufferGeometry();
         constraintGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_CONSTRAINTS * 6), 3));
         this.constraintLines = new THREE.LineSegments(constraintGeo, new THREE.LineBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.8 }));
@@ -230,15 +230,24 @@ export class WebPhysics {
         const enc = this.device!.createCommandEncoder();
         
         for (let s = 0; s < subs; s++) {
+            // 1. Integracja
             const p1 = enc.beginComputePass(); p1.setBindGroup(0, this.bindGroups[0]); p1.setPipeline(this.pipelines.integrate!); p1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); p1.end();
+            
+            // 2. Wiązania (kilka iteracji)
             for (let i = 0; i < 4; i++) {
                 for (let ph = 0; ph <= this.maxColor; ph++) {
                     const d = enc.beginComputePass(); d.setBindGroup(0, this.bindGroups[ph]); d.setPipeline(this.pipelines.solveDistance!); d.dispatchWorkgroups(Math.ceil(this.numDistConstraints/64)); d.end();
                 }
                 const at = enc.beginComputePass(); at.setBindGroup(0, this.bindGroups[0]); at.setPipeline(this.pipelines.solveAttachments!); at.dispatchWorkgroups(Math.ceil(this.numAttachments/64)); at.end();
             }
+            
+            // 3. Kolizje pozycyjne (BEZ tarciA - tylko pozycje)
             const c0 = enc.beginComputePass(); c0.setBindGroup(0, this.bindGroups[0]); c0.setPipeline(this.pipelines.solveParticleCollisions!); c0.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c0.end();
             const c1 = enc.beginComputePass(); c1.setBindGroup(0, this.bindGroups[0]); c1.setPipeline(this.pipelines.solveCollisions!); c1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); c1.end();
+            
+            // 4. TARCIE (osobno, po wszystkich korektach pozycji)
+            const f1 = enc.beginComputePass(); f1.setBindGroup(0, this.bindGroups[0]); f1.setPipeline(this.pipelines.applyFriction!); f1.dispatchWorkgroups(Math.ceil(this.numParticles/64)); f1.end();
+            const f2 = enc.beginComputePass(); f2.setBindGroup(0, this.bindGroups[0]); f2.setPipeline(this.pipelines.applyParticleFriction!); f2.dispatchWorkgroups(Math.ceil(this.numParticles/64)); f2.end();
         }
         
         enc.copyBufferToBuffer(this.particleBuffer!, 0, this.stagingBuffer!, 0, this.particles.byteLength);

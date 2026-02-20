@@ -671,6 +671,212 @@
       "checksum": "51fcdbee1c06bb0fc471146ae9e118a05b20b7e035dd12d2ada7954f62338ec0",
       "id": "e1a115dc-a698-40e5-8c23-cacc068a7941",
       "timestamp": 1771605582452
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Implemented friction for world boundaries in the physics solver. Now, when rope segments or dynamic objects slide against the aquarium walls, their tangential velocity is reduced according to the object's friction coefficient, rather than being instantly zeroed out. This makes ropes slide more realistically along floors and ceilings.",
+        "base_version": "0.0.119",
+        "version": "0.0.120",
+        "files": [
+          {
+            "filename": "src/physics.wgsl",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    let bx = 11.8; let by = 6.8;\n    if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; p.oldPos.x = p.pos.x; }\n    if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; p.oldPos.x = p.pos.x; }\n    if (p.pos.y > by - p.radius) { p.pos.y = by - p.radius; p.oldPos.y = p.pos.y; }\n    if (p.pos.y < -by + p.radius) { p.pos.y = -by + p.radius; p.oldPos.y = p.pos.y; }",
+                "replace": "    let bx = 11.8; let by = 6.8;\n    let walls = array<vec3<f32>, 4>(\n        vec3<f32>(-1.0, 0.0, bx),  // Right\n        vec3<f32>(1.0, 0.0, bx),   // Left\n        vec3<f32>(0.0, -1.0, by),  // Top\n        vec3<f32>(0.0, 1.0, by)    // Bottom\n    );\n\n    for (var k: u32 = 0u; k < 4u; k++) {\n        let wall = walls[k];\n        let n = vec2<f32>(wall.x, wall.y);\n        let limit = wall.z;\n        let current_pos_proj = dot(p.pos, -n);\n        \n        if (current_pos_proj > limit - p.radius) {\n            let overlap = current_pos_proj - (limit - p.radius);\n            p.pos = p.pos + n * overlap;\n\n            let dp = p.pos - p.oldPos;\n            let dpT = dp - dot(dp, n) * n;\n            let dpTLen = length(dpT);\n            if (dpTLen > 0.0001) {\n                let force = min(p.friction * overlap, dpTLen);\n                p.oldPos += (dpT / dpTLen) * force;\n            }\n        }\n    }"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Add boundary friction logic",
+          "text": "The world boundary collision logic in `solveCollisions` has been updated to use the same PBD friction model as the obstacles. This allows particles and rope nodes to slide along the outer aquarium walls with a configurable friction force instead of sticking immediately."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/physics.wgsl",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "d01b93d8b6b215f9fba376ddd41cc74f352232ae26591cd8b4818e7dc2e3d298",
+      "id": "a637f1fd-408b-49ca-9f1a-902c60f9dfc1",
+      "timestamp": 1771606679045
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Fixed a critical bug in the physics solver where collision results were only partially saved to the GPU. The tangential 'friction' force was being calculated but then discarded because the updated particle velocity (stored in `oldPos`) was never written back to the storage buffer. I have also refined the PBD friction model to be more robust, removing the 'reset-to-zero' velocity lines that caused jittering and replacing them with proper tangential damping based on the object's friction coefficient.",
+        "base_version": "0.0.120",
+        "version": "0.0.121",
+        "files": [
+          {
+            "filename": "src/physics.wgsl",
+            "mode": "overwrite",
+            "content": "struct Particle {\n    pos: vec2<f32>,\n    oldPos: vec2<f32>,\n    isFree: f32,\n    friction: f32,\n    invMass: f32,\n    radius: f32,\n};\n\nstruct DistanceConstraint {\n    idxA: u32,\n    idxB: u32,\n    restLength: f32,\n    compliance: f32,\n    color: u32,\n    pad1: u32,\n    pad2: u32,\n    pad3: u32,\n};\n\nstruct Attachment {\n    pIdx: u32,\n    aIdx: u32,\n    bIdx: u32,\n    t: f32,\n};\n\nstruct Obstacle {\n    pos: vec2<f32>,\n    size: vec2<f32>, \n    type_id: u32,    \n    rotation: f32,   \n    extra: vec2<f32>,\n};\n\nstruct Params {\n    dt: f32,\n    gravity: f32,\n    numParticles: u32,\n    numDistConstraints: u32,\n    substeps: u32,\n    phase: u32,\n    mousePos: vec2<f32>,\n    activeParticleIdx: i32,\n    numAttachments: u32,\n    damping: f32,\n    paused: u32,\n    numObstacles: u32,\n};\n\n@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;\n@group(0) @binding(1) var<storage, read> distConstraints: array<DistanceConstraint>;\n@group(0) @binding(2) var<storage, read> attachments: array<Attachment>;\n@group(0) @binding(3) var<uniform> params: Params;\n@group(0) @binding(4) var<storage, read> obstacles: array<Obstacle>;\n\nfn rotate(v: vec2<f32>, angle: f32) -> vec2<f32> {\n    let s = sin(angle);\n    let c = cos(angle);\n    return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);\n}\n\nfn sdRoundedBox(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {\n    let q = abs(p) - b + r;\n    return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;\n}\n\nfn sdUnevenCapsule(p: vec2<f32>, r1: f32, r2: f32, h: f32) -> f32 {\n    let px = abs(p.x);\n    let b = (r1 - r2) / h;\n    let a = sqrt(max(0.0, 1.0 - b * b));\n    let k = dot(vec2<f32>(px, p.y), vec2<f32>(-b, a));\n    if (k < 0.0) { return length(vec2<f32>(px, p.y)) - r1; }\n    if (k > a * h) { return length(vec2<f32>(px, p.y - h)) - r2; }\n    return dot(vec2<f32>(px, p.y), vec2<f32>(a, b)) - r1;\n}\n\nfn sdVesica(p: vec2<f32>, r: f32, d: f32) -> f32 {\n    let pa = abs(p);\n    let b = sqrt(max(0.0, r * r - d * d));\n    return select(length(pa - vec2<f32>(-d, 0.0)) - r, length(pa - vec2<f32>(0.0, b)), pa.y * d > pa.x * b + d * d);\n}\n\nfn getSDF(p: vec2<f32>, obs: Obstacle) -> f32 {\n    let localP = rotate(p - obs.pos, -obs.rotation);\n    if (obs.type_id == 0u) {\n        return length(localP) - obs.size.x;\n    } else if (obs.type_id == 1u) {\n        let d = abs(localP) - obs.size * 0.5;\n        return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);\n    } else if (obs.type_id == 2u) {\n        return sdRoundedBox(localP, obs.size * 0.5, obs.extra.x);\n    } else if (obs.type_id == 3u) {\n        return sdUnevenCapsule(localP, obs.size.x, obs.size.y, obs.extra.x);\n    } else if (obs.type_id == 4u) {\n        return sdVesica(localP, obs.size.x, obs.size.y);\n    }\n    return 1000.0;\n}\n\nfn getInvMass(i: u32) -> f32 {\n    let p = particles[i];\n    if (params.paused == 1u && p.isFree == 0.0 && i != u32(params.activeParticleIdx)) {\n        return 0.0;\n    }\n    return p.invMass;\n}\n\n@compute @workgroup_size(64)\nfn integrate(@builtin(global_invocation_id) id: vec3<u32>) {\n    let i = id.x;\n    if (i >= params.numParticles) { return; }\n    var p = particles[i];\n    if (i == u32(params.activeParticleIdx)) {\n        particles[i].pos = params.mousePos;\n        particles[i].oldPos = params.mousePos;\n        return;\n    }\n    if (params.paused == 1u && p.isFree == 0.0) {\n        particles[i].oldPos = p.pos;\n        return;\n    }\n    if (p.invMass <= 0.0) { return; }\n    let h = params.dt / f32(params.substeps);\n    var vel = (p.pos - p.oldPos) / h;\n    vel = vel * params.damping;\n    vel = vel + vec2<f32>(0.0, params.gravity) * h;\n    particles[i].oldPos = p.pos;\n    particles[i].pos = p.pos + vel * h;\n}\n\n@compute @workgroup_size(64)\nfn solveDistance(@builtin(global_invocation_id) id: vec3<u32>) {\n    let i = id.x;\n    if (i >= params.numDistConstraints) { return; }\n    let c = distConstraints[i];\n    if (c.idxA == c.idxB || c.color != params.phase) { return; }\n    let w1 = getInvMass(c.idxA); \n    let w2 = getInvMass(c.idxB);\n    let wSum = w1 + w2; if (wSum <= 0.0) { return; }\n    let delta = particles[c.idxA].pos - particles[c.idxB].pos;\n    let dist = length(delta); if (dist < 0.0001) { return; }\n    let h = params.dt / f32(params.substeps);\n    let alpha = c.compliance / (h * h);\n    let dLambda = -(dist - c.restLength) / (wSum + alpha);\n    let correction = delta * (dLambda / dist);\n    if (w1 > 0.0) { particles[c.idxA].pos += correction * w1; }\n    if (w2 > 0.0) { particles[c.idxB].pos -= correction * w2; }\n}\n\n@compute @workgroup_size(64)\nfn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {\n    let i = id.x; if (i >= params.numAttachments) { return; }\n    let att = attachments[i];\n    let p = particles[att.pIdx].pos;\n    let a = particles[att.aIdx].pos;\n    let b = particles[att.bIdx].pos;\n    let link_target = mix(a, b, att.t);\n    let delta = p - link_target; let dist = length(delta); if (dist < 0.00001) { return; }\n    let wp = getInvMass(att.pIdx); \n    let wa = getInvMass(att.aIdx); \n    let wb = getInvMass(att.bIdx);\n    let wSum = wp + wa * (1.0 - att.t) * (1.0 - att.t) + wb * att.t * att.t;\n    if (wSum <= 0.0) { return; }\n    let correction = normalize(delta) * (-dist / wSum);\n    if (wp > 0.0) { particles[att.pIdx].pos += correction * wp; }\n    if (wa > 0.0) { particles[att.aIdx].pos -= correction * wa * (1.0 - att.t); }\n    if (wb > 0.0) { particles[att.bIdx].pos -= correction * wb * att.t; }\n}\n\n@compute @workgroup_size(64)\nfn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {\n    let i = id.x; if (i >= params.numParticles) { return; }\n    var p = particles[i]; \n    let invMassI = getInvMass(i);\n    if (invMassI <= 0.0) { return; }\n\n    // 1. Boundary Collisions\n    let bx = 11.8; let by = 6.8;\n    let walls = array<vec3<f32>, 4>(\n        vec3<f32>(-1.0, 0.0, bx),  // Right\n        vec3<f32>(1.0, 0.0, bx),   // Left\n        vec3<f32>(0.0, -1.0, by),  // Top\n        vec3<f32>(0.0, 1.0, by)    // Bottom\n    );\n\n    for (var k: u32 = 0u; k < 4u; k++) {\n        let wall = walls[k];\n        let n = vec2<f32>(wall.x, wall.y);\n        let limit = wall.z;\n        let current_pos_proj = dot(p.pos, -n);\n        \n        if (current_pos_proj > limit - p.radius) {\n            let overlap = current_pos_proj - (limit - p.radius);\n            p.pos = p.pos + n * overlap;\n\n            let dp = p.pos - p.oldPos;\n            let dpT = dp - dot(dp, n) * n;\n            let dpTLen = length(dpT);\n            if (dpTLen > 0.0001) {\n                let force = min(p.friction * 0.5, dpTLen);\n                p.oldPos += (dpT / dpTLen) * force;\n            }\n        }\n    }\n\n    // 2. Obstacle Collisions\n    for (var j: u32 = 0u; j < params.numObstacles; j++) {\n        let obs = obstacles[j];\n        let d = getSDF(p.pos, obs);\n        if (d < p.radius) {\n            let h = 0.01;\n            let dx = getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d;\n            let dy = getSDF(p.pos + vec2<f32>(0.0, h), obs) - d;\n            let n = normalize(vec2<f32>(dx, dy));\n            let overlap = p.radius - d;\n            p.pos = p.pos + n * overlap;\n            \n            let dp = p.pos - p.oldPos;\n            let dpT = dp - dot(dp, n) * n;\n            let dpTLen = length(dpT);\n            if (dpTLen > 0.0001) {\n                let fric = obs.extra.y;\n                let force = min(fric * 0.5, dpTLen);\n                p.oldPos += (dpT / dpTLen) * force;\n            }\n        }\n    }\n    particles[i].pos = p.pos;\n    particles[i].oldPos = p.oldPos;\n}\n\n@compute @workgroup_size(64)\nfn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {\n    let i = id.x; if (i >= params.numParticles) { return; }\n    var pi = particles[i]; \n    let w1 = getInvMass(i);\n    if (w1 <= 0.0) { return; }\n    \n    for (var j: u32 = 0u; j < params.numParticles; j++) {\n        if (i == j) { continue; }\n        let pj = particles[j];\n        let delta = pi.pos - pj.pos; let dist = length(delta); let minDist = pi.radius + pj.radius;\n        if (dist < minDist && dist > 0.0001) {\n            let w2 = getInvMass(j);\n            let wSum = w1 + w2;\n            if (wSum > 0.0) { \n                let n = delta / dist; \n                let overlap = minDist - dist; \n                pi.pos += n * overlap * (w1 / wSum);\n                \n                let dp = pi.pos - pi.oldPos;\n                let dpT = dp - dot(dp, n) * n;\n                let dpTLen = length(dpT);\n                if (dpTLen > 0.0001) {\n                    let fric = (pi.friction + pj.friction) * 0.5;\n                    let force = min(fric * 0.5, dpTLen);\n                    pi.oldPos += (dpT / dpTLen) * force * (w1 / wSum);\n                }\n            }\n        }\n    }\n    particles[i].pos = pi.pos;\n    particles[i].oldPos = pi.oldPos;\n}",
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Fix friction calculation and save state",
+          "text": "Corrected the physics compute shader to ensure that updates to `oldPos` (the velocity proxy) are correctly saved back to the GPU storage buffer. Removed redundant velocity-zeroing logic and balanced the friction response so that it meaningfully affects motion when strings interact with static objects or boundaries."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/physics.wgsl",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "53f85982a0541a98a2ba95d6bdddea995727756d50f2fd81b5d7346810a9ebb7",
+      "id": "5d504d72-fec6-469a-8bbd-ed905cc10269",
+      "timestamp": 1771607077541
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Refactored the React UI into modular components (TopBar, ObjectList, ObjectProperties, and Toolbar). Set the default rope building mode to 'auto' and implemented logic where scrolling immediately switches it to 'manual'. Updated the UI to provide clear instructions for MMB and scrolling shortcuts.",
+        "version": "0.0.122",
+        "files": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "    onFpsUpdate?: (fps: number) => void;\n    onSelectEntity?: (ent: Entity | null) => void;\n    onToggleLineBuildMode?: () => void;",
+                "replace": "    onFpsUpdate?: (fps: number) => void;\n    onSelectEntity?: (ent: Entity | null) => void;\n    onToggleLineBuildMode?: () => void;\n    onManualReel?: () => void;"
+              },
+              {
+                "find": "    onWheel(e: WheelEvent) {\n        if (e.target === this.renderer.domElement && this.physics.activeRope && this.tool === 'build_line' && this.lineBuildMode === 'manual') {\n            this.physics.adjustRopeLength(this.physics.activeRope, e.deltaY);\n        }\n    }",
+                "replace": "    onWheel(e: WheelEvent) {\n        if (e.target === this.renderer.domElement && this.physics.activeRope && this.tool === 'build_line') {\n            if (this.lineBuildMode === 'auto') {\n                this.onManualReel?.();\n            }\n            this.physics.adjustRopeLength(this.physics.activeRope, e.deltaY);\n        }\n    }"
+              }
+            ],
+            "status": "executed"
+          },
+          {
+            "filename": "src/components/TopBar.tsx",
+            "mode": "create",
+            "content": "import React from 'react';\nimport { world } from '../ecs';\n\ninterface TopBarProps {\n    isLevelMenuOpen: boolean;\n    setIsLevelMenuOpen: (val: boolean) => void;\n    isPaused: boolean;\n    setIsPaused: (val: boolean) => void;\n    showPanels: { list: boolean; props: boolean };\n    setShowPanels: React.Dispatch<React.SetStateAction<{ list: boolean; props: boolean }>>;\n    onDeleteEntity: (ent: any) => void;\n}\n\nexport const TopBar: React.FC<TopBarProps> = ({ \n    isLevelMenuOpen, \n    setIsLevelMenuOpen, \n    isPaused, \n    setIsPaused, \n    showPanels, \n    setShowPanels,\n    onDeleteEntity\n}) => (\n    <div style={{ height: 40, background: '#111', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 15px', gap: 20, zIndex: 10 }}>\n        <div style={{ fontWeight: 'bold', color: '#4a90e2' }}>PAJONK V0.1.5</div>\n        <div style={{ display: 'flex', gap: 10 }}>\n            <div style={{ position: 'relative' }}>\n                <button onClick={() => setIsLevelMenuOpen(!isLevelMenuOpen)} style={{ background: '#222', color: '#ccc', border: '1px solid #444', padding: '2px 10px', cursor: 'pointer' }}>Level ▾</button>\n                {isLevelMenuOpen && (\n                    <div style={{ position: 'absolute', top: '100%', left: 0, background: '#222', border: '1px solid #444', zIndex: 100, display: 'flex', flexDirection: 'column', minWidth: 100 }}>\n                        <button onClick={() => { [...world.entities].forEach(onDeleteEntity); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>\n                        <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>\n                        <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load</button>\n                    </div>\n                )}\n            </div>\n            <button onClick={() => setIsPaused(!isPaused)} style={{ background: isPaused ? '#33aa33' : '#aa3333', border: 'none', borderRadius: 3, padding: '2px 12px', fontWeight: 'bold', cursor: 'pointer', color: 'white' }}>{isPaused ? '▶ PLAY' : '■ STOP'}</button>\n        </div>\n        <div style={{ marginLeft: 'auto', display: 'flex', gap: 15, fontSize: 11 }}>\n            <label style={{ cursor: 'pointer' }}><input type=\"checkbox\" checked={showPanels.list} onChange={() => setShowPanels(p => ({...p, list: !p.list}))}/> List</label>\n            <label style={{ cursor: 'pointer' }}><input type=\"checkbox\" checked={showPanels.props} onChange={() => setShowPanels(p => ({...p, props: !p.props}))}/> Props</label>\n        </div>\n    </div>\n);",
+            "status": "executed"
+          },
+          {
+            "filename": "src/components/ObjectList.tsx",
+            "mode": "create",
+            "content": "import React from 'react';\nimport { world, type Entity } from '../ecs';\n\ninterface ObjectListProps {\n    selectedEntity: Entity | null;\n    setSelectedEntity: (ent: Entity | null) => void;\n}\n\nexport const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelectedEntity }) => (\n    <div style={{ flex: selectedEntity ? '0 0 250px' : '1', padding: 10, overflowY: 'auto', borderBottom: selectedEntity ? '1px solid #333' : 'none' }}>\n        <div style={{ fontSize: 10, marginBottom: 10, color: '#555', letterSpacing: '1px' }}>SCENE HIERARCHY</div>\n        {world.entities.map(e => (\n            <div key={e.id} onClick={() => setSelectedEntity(e)} style={{ \n                padding: '6px 8px', \n                fontSize: 11, \n                borderLeft: selectedEntity?.id === e.id ? '2px solid #4a90e2' : '2px solid transparent', \n                background: selectedEntity?.id === e.id ? '#1a1a1a' : 'transparent', \n                cursor: 'pointer', \n                marginBottom: 2, \n                whiteSpace: 'nowrap', \n                overflow: 'hidden', \n                textOverflow: 'ellipsis', \n                color: selectedEntity?.id === e.id ? '#fff' : '#aaa' \n            }}>\n                {e.name}\n            </div>\n        ))}\n    </div>\n);",
+            "status": "executed"
+          },
+          {
+            "filename": "src/components/ObjectProperties.tsx",
+            "mode": "create",
+            "content": "import React from 'react';\nimport * as THREE from 'three';\nimport { type Entity } from '../ecs';\nimport { EditorEngine } from '../core/EditorEngine';\n\ninterface ObjectPropertiesProps {\n    selectedEntity: Entity;\n    setSelectedEntity: (ent: Entity | null) => void;\n    onDelete: (ent: Entity) => void;\n    handleUpdatePhysics: (ent: Entity) => void;\n    engine: EditorEngine | null;\n}\n\nexport const ObjectProperties: React.FC<ObjectPropertiesProps> = ({ selectedEntity, setSelectedEntity, onDelete, handleUpdatePhysics, engine }) => (\n    <div style={{ flex: 1, padding: 12, fontSize: 12, overflowY: 'auto' }}>\n        <div style={{ fontSize: 10, marginBottom: 15, color: '#555', letterSpacing: '1px' }}>PROPERTIES</div>\n        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>\n            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                <span>Name</span>\n                <input value={selectedEntity.name} onChange={e => { selectedEntity.name = e.target.value; setSelectedEntity({...selectedEntity}); }} style={{ width: 110, background: '#000', color: '#fff', border: '1px solid #333', padding: '4px 6px' }}/>\n            </div>\n            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                <span>Position</span>\n                <div style={{ display: 'flex', gap: 4 }}>\n                    <input type=\"number\" value={selectedEntity.position.x} onChange={e => { selectedEntity.position.x = Number(e.target.value); handleUpdatePhysics(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.x = selectedEntity.position.x; setSelectedEntity({...selectedEntity}); }} step=\"0.1\" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>\n                    <input type=\"number\" value={selectedEntity.position.y} onChange={e => { selectedEntity.position.y = Number(e.target.value); handleUpdatePhysics(selectedEntity); if (selectedEntity.renderable) selectedEntity.renderable.mesh.position.y = selectedEntity.position.y; setSelectedEntity({...selectedEntity}); }} step=\"0.1\" style={{ width: 50, background: '#000', color: '#fff', border: '1px solid #333' }}/>\n                </div>\n            </div>\n            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                <span>Rotation</span>\n                <input type=\"number\" value={Math.round(THREE.MathUtils.radToDeg(selectedEntity.rotation))} onChange={e => { selectedEntity.rotation = THREE.MathUtils.degToRad(Number(e.target.value)); if (selectedEntity.renderable) selectedEntity.renderable.mesh.rotation.z = selectedEntity.rotation; setSelectedEntity({...selectedEntity}); }} step=\"1\" style={{ width: 104, background: '#000', color: '#fff', border: '1px solid #333', padding: '2px' }}/>\n            </div>\n            {selectedEntity.sdfCollider && (\n                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px', background: '#000', borderRadius: 4 }}>\n                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                        <span>Width / R1</span>\n                        <input type=\"number\" min=\"0.1\" max=\"100\" step=\"0.1\" value={selectedEntity.sdfCollider.size.x} onChange={e => { selectedEntity.sdfCollider!.size.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                    </div>\n                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                        <span>Height / R2</span>\n                        <input type=\"number\" min=\"0.1\" max=\"100\" step=\"0.1\" value={selectedEntity.sdfCollider.size.y} onChange={e => { selectedEntity.sdfCollider!.size.y = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                    </div>\n                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                        <span>Extra (H/Corner)</span>\n                        <input type=\"number\" min=\"0\" max=\"100\" step=\"0.1\" value={selectedEntity.scale.x} onChange={e => { selectedEntity.scale.x = Number(e.target.value); setSelectedEntity({...selectedEntity}); }} style={{ width: 60, background: '#111', color: '#fff' }}/>\n                    </div>\n                </div>\n            )}\n            {selectedEntity.physics && (\n                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                    <span>Mass</span>\n                    <input type=\"number\" min=\"0.1\" max=\"1000\" step=\"0.1\" value={selectedEntity.physics.mass} onChange={e => { \n                        const m = Math.max(0.1, Number(e.target.value));\n                        selectedEntity.physics!.mass = m;\n                        selectedEntity.physics!.invMass = 1.0 / m;\n                        if (selectedEntity.physics!.particleIdx !== undefined) {\n                            engine?.physics.setParticleInvMass(selectedEntity.physics.particleIdx, 1.0 / m);\n                            engine?.physics.syncGPU();\n                        }\n                        setSelectedEntity({...selectedEntity}); \n                    }} style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n                </div>\n            )}\n            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>\n                <span>Friction</span>\n                <input type=\"number\" min=\"0\" max=\"2\" step=\"0.05\" value={selectedEntity.friction ?? 0.5} onChange={e => { \n                    selectedEntity.friction = Number(e.target.value); \n                    if (selectedEntity.physics?.particleIdx !== undefined) {\n                        engine?.physics.setParticleFriction(selectedEntity.physics.particleIdx, selectedEntity.friction);\n                        engine?.physics.syncGPU();\n                    }\n                    setSelectedEntity({...selectedEntity}); \n                }} style={{ width: 60, background: '#111', color: '#fff', padding: '2px', border: '1px solid #333' }}/>\n            </div>\n            <button onClick={() => onDelete(selectedEntity)} style={{ marginTop: 20, background: '#aa3333', color: '#fff', border: 'none', padding: '10px', cursor: 'pointer', fontWeight: 'bold' }}>DELETE OBJECT</button>\n        </div>\n    </div>\n);",
+            "status": "executed"
+          },
+          {
+            "filename": "src/components/Toolbar.tsx",
+            "mode": "create",
+            "content": "import React from 'react';\nimport { ToolMode, PlacementState } from '../types';\n\ninterface ToolbarProps {\n    tool: ToolMode;\n    setTool: (tool: ToolMode) => void;\n    placement: PlacementState;\n    setPlacement: (p: PlacementState) => void;\n    isStaticMenuOpen: boolean;\n    setIsStaticMenuOpen: (v: boolean) => void;\n    isDynamicMenuOpen: boolean;\n    setIsDynamicMenuOpen: (v: boolean) => void;\n}\n\nexport const Toolbar: React.FC<ToolbarProps> = ({ \n    tool, \n    setTool, \n    placement, \n    setPlacement, \n    isStaticMenuOpen, \n    setIsStaticMenuOpen, \n    isDynamicMenuOpen, \n    setIsDynamicMenuOpen \n}) => (\n    <div style={{ position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 2, background: '#111', padding: 3, borderRadius: 4, border: '1px solid #444', zIndex: 20 }}>\n        <button onClick={() => setTool('select')} style={{ background: tool === 'select' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>SELECT</button>\n        <button onClick={() => setTool('build_line')} style={{ background: tool === 'build_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>ROPE</button>\n        <div style={{ position: 'relative' }}>\n            <button onClick={() => { setTool('create_obj'); setIsStaticMenuOpen(!isStaticMenuOpen); setIsDynamicMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'static' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>STATIC ▾</button>\n            {isStaticMenuOpen && tool === 'create_obj' && (\n                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>\n                    <button onClick={() => { setPlacement({type: 'static', shape: 'box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Box</button>\n                    <button onClick={() => { setPlacement({type: 'static', shape: 'circle'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Static Circ</button>\n                    <button onClick={() => { setPlacement({type: 'static', shape: 'rounded_box'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Rounded Box</button>\n                    <button onClick={() => { setPlacement({type: 'static', shape: 'capsule'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Uneven Capsule</button>\n                    <button onClick={() => { setPlacement({type: 'static', shape: 'vesica'}); setIsStaticMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Vesica</button>\n                </div>\n            )}\n        </div>\n        <div style={{ position: 'relative' }}>\n            <button onClick={() => { setTool('create_obj'); setIsDynamicMenuOpen(!isDynamicMenuOpen); setIsStaticMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'dynamic' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>DYNAMIC ▾</button>\n            {isDynamicMenuOpen && tool === 'create_obj' && (\n                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>\n                    <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsDynamicMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>\n                </div>\n            )}\n        </div>\n        <button onClick={() => setTool('cut_line')} style={{ background: tool === 'cut_line' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>CUT</button>\n    </div>\n);",
+            "status": "executed"
+          },
+          {
+            "filename": "src/main.tsx",
+            "mode": "overwrite",
+            "content": "import React, { useEffect, useRef, useState } from 'react';\nimport ReactDOM from 'react-dom/client';\nimport { type Entity } from './ecs';\nimport { EditorEngine } from './core/EditorEngine';\nimport { deleteEntity, updatePhysicsFromUI } from './core/EntityFactory';\nimport type { ToolMode, PlacementState } from './types';\nimport { TopBar } from './components/TopBar';\nimport { ObjectList } from './components/ObjectList';\nimport { ObjectProperties } from './components/ObjectProperties';\nimport { Toolbar } from './components/Toolbar';\n\nconst App = () => {\n    const canvasRef = useRef<HTMLDivElement>(null);\n    const engineRef = useRef<EditorEngine | null>(null);\n\n    const [tool, setTool] = useState<ToolMode>('select');\n    const [lineBuildMode, setLineBuildMode] = useState<'manual' | 'auto'>('auto');\n    const [isPaused, setIsPaused] = useState(true);\n    const [showPanels, setShowPanels] = useState({ list: true, props: true });\n    const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);\n    const [isLevelMenuOpen, setIsLevelMenuOpen] = useState(false);\n    const [isStaticMenuOpen, setIsStaticMenuOpen] = useState(false);\n    const [isDynamicMenuOpen, setIsDynamicMenuOpen] = useState(false);\n    const [placement, setPlacement] = useState<PlacementState>(null);\n    const [fps, setFps] = useState(0);\n\n    useEffect(() => {\n        if (!canvasRef.current) return;\n        const engine = new EditorEngine(canvasRef.current);\n        engine.onFpsUpdate = setFps;\n        engine.onSelectEntity = setSelectedEntity;\n        engine.onToggleLineBuildMode = () => setLineBuildMode(p => p === 'manual' ? 'auto' : 'manual');\n        engine.onManualReel = () => setLineBuildMode('manual');\n        engine.init();\n        engineRef.current = engine;\n        return () => engine.dispose();\n    }, []);\n\n    useEffect(() => { \n        if (tool !== 'create_obj') {\n            setPlacement(null);\n            setIsStaticMenuOpen(false);\n            setIsDynamicMenuOpen(false);\n        }\n        if (engineRef.current) engineRef.current.tool = tool; \n    }, [tool]);\n\n    useEffect(() => { if (engineRef.current) engineRef.current.lineBuildMode = lineBuildMode; }, [lineBuildMode]);\n    useEffect(() => { if (engineRef.current) engineRef.current.isPaused = isPaused; }, [isPaused]);\n    useEffect(() => { if (engineRef.current) engineRef.current.setPlacement(placement); }, [placement]);\n    useEffect(() => { if (engineRef.current) engineRef.current.selectedEntityId = selectedEntity?.id || null; }, [selectedEntity]);\n\n    const handleDelete = (ent: Entity) => {\n        if (!engineRef.current) return;\n        deleteEntity(engineRef.current.physics, ent);\n        if (selectedEntity?.id === ent.id) setSelectedEntity(null);\n    };\n\n    const handleUpdatePhysics = (ent: Entity) => {\n        if (!engineRef.current) return;\n        updatePhysicsFromUI(engineRef.current.physics, ent);\n        setSelectedEntity({...ent});\n    };\n\n    return (\n        <div style={{ position: 'fixed', inset: 0, color: '#eee', fontFamily: 'monospace', display: 'flex', flexDirection: 'column', userSelect: 'none', background: '#222' }}>\n            <TopBar \n                isLevelMenuOpen={isLevelMenuOpen} \n                setIsLevelMenuOpen={setIsLevelMenuOpen} \n                isPaused={isPaused} \n                setIsPaused={setIsPaused}\n                showPanels={showPanels} \n                setShowPanels={setShowPanels}\n                onDeleteEntity={handleDelete}\n            />\n\n            <div style={{ flex: 1, position: 'relative', display: 'flex', overflow: 'hidden' }}>\n                <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#111', borderRight: '1px solid #333' }}>\n                    {showPanels.list && (\n                        <ObjectList \n                            selectedEntity={selectedEntity} \n                            setSelectedEntity={setSelectedEntity} \n                        />\n                    )}\n                    {showPanels.props && selectedEntity && (\n                        <ObjectProperties \n                            selectedEntity={selectedEntity} \n                            setSelectedEntity={setSelectedEntity} \n                            onDelete={handleDelete}\n                            handleUpdatePhysics={handleUpdatePhysics}\n                            engine={engineRef.current}\n                        />\n                    )}\n                </div>\n\n                <div ref={canvasRef} style={{ flex: 1, position: 'relative', background: '#000', overflow: 'hidden' }}>\n                   <Toolbar \n                        tool={tool} \n                        setTool={setTool} \n                        placement={placement} \n                        setPlacement={setPlacement}\n                        isStaticMenuOpen={isStaticMenuOpen} \n                        setIsStaticMenuOpen={setIsStaticMenuOpen}\n                        isDynamicMenuOpen={isDynamicMenuOpen} \n                        setIsDynamicMenuOpen={setIsDynamicMenuOpen}\n                   />\n                   <div style={{ position: 'absolute', top: 10, left: 10, color: '#444', fontSize: 10 }}>\n                        FPS: {fps} | Mode: {lineBuildMode.toUpperCase()} <br/>\n                        <span style={{ color: '#666' }}>MMB: Switch Modes | Scroll: Reel/Unreel</span>\n                   </div>\n                </div>\n            </div>\n        </div>\n    );\n};\n\nReactDOM.createRoot(document.getElementById('root')!).render(<App />);\n",
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Clean UI Architecture and Improve Rope Controls",
+          "text": "The React codebase has been refactored into a clear component hierarchy, separating the TopBar, Hierarchy, Properties, and Toolbar. Rope building logic now defaults to 'auto' but gracefully transitions to 'manual' on the first scroll event. The HUD now displays helpful shortcuts for mid-air rope manipulation."
+        },
+        "status": "executed",
+        "base_version": "0.0.121",
+        "execution_results": [
+          {
+            "filename": "src/core/EditorEngine.ts",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/components/TopBar.tsx",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/components/ObjectList.tsx",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/components/ObjectProperties.tsx",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/components/Toolbar.tsx",
+            "status": "executed",
+            "errors": ""
+          },
+          {
+            "filename": "src/main.tsx",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "defc0881c31121ae7ce50c946ee3c2ca25c8763f3c635924ee50d14225278eb0",
+      "id": "3dac8be6-8d81-4589-b66e-22869c23741e",
+      "timestamp": 1771609847941
+    },
+    {
+      "type": "agent_plan",
+      "plan": {
+        "message": "Updated the HUD to conditionally display rope building mode and control instructions only when the ROPE tool is active. The FPS counter remains visible at all times.",
+        "base_version": "0.0.122",
+        "version": "0.0.123",
+        "files": [
+          {
+            "filename": "src/main.tsx",
+            "mode": "diff",
+            "diff": [
+              {
+                "find": "                   <div style={{ position: 'absolute', top: 10, left: 10, color: '#444', fontSize: 10 }}>\n                        FPS: {fps} | Mode: {lineBuildMode.toUpperCase()} <br/>\n                        <span style={{ color: '#666' }}>MMB: Switch Modes | Scroll: Reel/Unreel</span>\n                   </div>",
+                "replace": "                   <div style={{ position: 'absolute', top: 10, left: 10, color: '#444', fontSize: 10 }}>\n                        FPS: {fps}\n                        {tool === 'build_line' && (\n                            <>\n                                <span style={{ marginLeft: 10 }}>| MODE: {lineBuildMode.toUpperCase()}</span><br/>\n                                <span style={{ color: '#666' }}>MMB: SWITCH MODES | SCROLL: REEL/UNREEL</span>\n                            </>\n                        )}\n                   </div>"
+              }
+            ],
+            "status": "executed"
+          }
+        ],
+        "schema_1_26": true,
+        "task": {
+          "type": "done",
+          "title": "Conditional HUD instructions",
+          "text": "The rope building mode and control shortcuts are now context-aware and only show up when the user selects the ROPE tool, reducing UI clutter during selection or object creation."
+        },
+        "status": "executed",
+        "execution_results": [
+          {
+            "filename": "src/main.tsx",
+            "status": "executed",
+            "errors": ""
+          }
+        ]
+      },
+      "checksum": "816212faf6f89ee8a0841a80e2df4c7db749b03551d5befe965bba528d366498",
+      "id": "d4420625-7bc0-4fa4-adf7-e6eedb15ef5b",
+      "timestamp": 1771610187050
     }
   ]
 }

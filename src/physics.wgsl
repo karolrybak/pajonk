@@ -168,6 +168,10 @@ fn solveAttachments(@builtin(global_invocation_id) id: vec3<u32>) {
     if (wb > 0.0) { particles[att.bIdx].pos -= correction * wb * att.t; }
 }
 
+// ============================================
+// KOLIZJE - TYLKO POZYCJE (BEZ TARCIA)
+// ============================================
+
 @compute @workgroup_size(64)
 fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x; if (i >= params.numParticles) { return; }
@@ -175,6 +179,7 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     let invMassI = getInvMass(i);
     if (invMassI <= 0.0) { return; }
 
+    // Boundary Collisions - TYLKO pozycja
     let bx = 11.8; let by = 6.8;
     if (p.pos.x > bx - p.radius) { p.pos.x = bx - p.radius; p.oldPos.x = p.pos.x; }
     if (p.pos.x < -bx + p.radius) { p.pos.x = -bx + p.radius; p.oldPos.x = p.pos.x; }
@@ -235,4 +240,130 @@ fn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     particles[i].pos = pi.pos;
+}
+
+// ============================================
+// TARCIE - OSOBNY PASS
+// ============================================
+
+@compute @workgroup_size(64)
+fn applyFriction(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x; if (i >= params.numParticles) { return; }
+    
+    var p = particles[i];
+    let w1 = getInvMass(i);
+    if (w1 <= 0.0) { return; }
+    
+    let vel = p.pos - p.oldPos;
+    let velLen = length(vel);
+    if (velLen < 0.0001) { return; }
+    
+    var newOldPos = p.oldPos;
+    let h = params.dt / f32(params.substeps);
+
+    // --- Tarcie z boundary ---
+    let bx = 11.8; let by = 6.8;
+    let walls = array<vec3<f32>, 4>(
+        vec3<f32>(-1.0, 0.0, bx),
+        vec3<f32>(1.0, 0.0, bx),
+        vec3<f32>(0.0, -1.0, by),
+        vec3<f32>(0.0, 1.0, by)
+    );
+
+    for (var k: u32 = 0u; k < 4u; k++) {
+        let wall = walls[k];
+        let n = vec2<f32>(wall.x, wall.y);
+        let limit = wall.z;
+        
+        // Czy dotykamy ściany? (mały epsilon dla stabilności)
+        if (dot(p.pos, -n) > limit - p.radius - 0.001) {
+            let vn = dot(vel, n);      // składowa normalna
+            let vt = vel - n * vn;     // składowa styczna
+            let vtLen = length(vt);
+            
+            if (vtLen > 0.0001) {
+                // Tarcie Coulomba: redukujemy prędkość styczną
+                // friction 0.0 = ślisko, 1.0 = pełne zatrzymanie
+                let frictionFactor = max(0.0, 1.0 - p.friction);
+                let newVel = n * vn + vt * frictionFactor;
+                newOldPos = p.pos - newVel;
+            }
+        }
+    }
+
+    // --- Tarcie z obstacles ---
+    for (var j: u32 = 0u; j < params.numObstacles; j++) {
+        let obs = obstacles[j];
+        let d = getSDF(p.pos, obs);
+        
+        if (d < p.radius + 0.001) {
+            let h_sdf = 0.001;
+            let n = normalize(vec2<f32>(
+                getSDF(p.pos + vec2<f32>(h_sdf, 0.0), obs) - d,
+                getSDF(p.pos + vec2<f32>(0.0, h_sdf), obs) - d
+            ));
+            
+            let vn = dot(vel, n);
+            let vt = vel - n * vn;
+            let vtLen = length(vt);
+            
+            if (vtLen > 0.0001) {
+                let obsFriction = obs.extra.y;
+                let frictionFactor = max(0.0, 1.0 - obsFriction);
+                let newVel = n * vn + vt * frictionFactor;
+                newOldPos = p.pos - newVel;
+            }
+        }
+    }
+
+    particles[i].oldPos = newOldPos;
+}
+
+@compute @workgroup_size(64)
+fn applyParticleFriction(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x; if (i >= params.numParticles) { return; }
+    
+    var p = particles[i];
+    let w1 = getInvMass(i);
+    if (w1 <= 0.0) { return; }
+    
+    let velI = p.pos - p.oldPos;
+    var newVel = velI;
+    
+    for (var j: u32 = 0u; j < params.numParticles; j++) {
+        if (i == j) { continue; }
+        
+        let pj = particles[j];
+        let delta = p.pos - pj.pos;
+        let dist = length(delta);
+        let minDist = p.radius + pj.radius;
+        
+        // Czy się stykamy?
+        if (dist < minDist + 0.001 && dist > 0.0001) {
+            let w2 = getInvMass(j);
+            if (w2 <= 0.0) { continue; }
+            
+            let n = delta / dist;
+            let velJ = pj.pos - pj.oldPos;
+            
+            // Względna prędkość
+            let relVel = newVel - velJ;
+            let vn = dot(relVel, n);
+            let vt = relVel - n * vn;
+            let vtLen = length(vt);
+            
+            if (vtLen > 0.0001) {
+                let avgFriction = (p.friction + pj.friction) * 0.5;
+                
+                // Redukcja względnej prędkości stycznej
+                let frictionFactor = max(0.0, 1.0 - avgFriction);
+                let newRelVel = n * vn + vt * frictionFactor;
+                
+                // newVel - velJ = newRelVel  =>  newVel = newRelVel + velJ
+                newVel = newRelVel + velJ;
+            }
+        }
+    }
+    
+    particles[i].oldPos = p.pos - newVel;
 }

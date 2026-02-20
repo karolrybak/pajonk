@@ -33,6 +33,7 @@ export class EditorEngine {
     onFpsUpdate?: (fps: number) => void;
     onSelectEntity?: (ent: Entity | null) => void;
     onToggleLineBuildMode?: () => void;
+    onManualReel?: () => void;
 
     constructor(canvas: HTMLElement) {
         this.canvas = canvas;
@@ -301,7 +302,10 @@ export class EditorEngine {
     }
 
     onWheel(e: WheelEvent) {
-        if (e.target === this.renderer.domElement && this.physics.activeRope && this.tool === 'build_line' && this.lineBuildMode === 'manual') {
+        if (e.target === this.renderer.domElement && this.physics.activeRope && this.tool === 'build_line') {
+            if (this.lineBuildMode === 'auto') {
+                this.onManualReel?.();
+            }
             this.physics.adjustRopeLength(this.physics.activeRope, e.deltaY);
         }
     }
