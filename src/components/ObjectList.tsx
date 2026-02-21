@@ -1,12 +1,16 @@
 import React from 'react';
 import { world, type Entity } from '../ecs';
+import { useEntities } from 'miniplex-react';
 
 interface ObjectListProps {
     selectedEntity: Entity | null;
     setSelectedEntity: (ent: Entity | null) => void;
 }
 
-export const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelectedEntity }) => (
+export const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelectedEntity }) => {
+    useEntities(world);
+    
+    return (
     <div style={{ flex: selectedEntity ? '0 0 250px' : '1', padding: 10, overflowY: 'auto', borderBottom: selectedEntity ? '1px solid #333' : 'none' }}>
         <div style={{ fontSize: 10, marginBottom: 10, color: '#555', letterSpacing: '1px' }}>SCENE HIERARCHY</div>
         {world.entities.map(e => (
@@ -27,3 +31,4 @@ export const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelec
         ))}
     </div>
 );
+};

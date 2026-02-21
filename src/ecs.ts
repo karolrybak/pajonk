@@ -28,9 +28,6 @@ export type Entity = {
     special?: {
         type: 'player_spawn';
     };
-    playerPart?: {
-        role: 'head' | 'torso';
-    };
 };
 
 export const world = new World<Entity>();
