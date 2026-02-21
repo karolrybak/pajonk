@@ -1,5 +1,4 @@
 import React from 'react';
-import * as THREE from 'three';
 import { type Entity } from '../ecs';
 
 interface ObjectPropertiesProps {
@@ -24,12 +23,12 @@ export const ObjectProperties: React.FC<ObjectPropertiesProps> = ({ selectedEnti
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         <span>Position</span>
                         <div style={{ display: 'flex', gap: 4 }}>
-                            <input type="number" step="0.1" value={selectedEntity.transform.position.x} onChange={e => { selectedEntity.transform!.position.x = Number(e.target.value); update(); }} style={{ width: 50, background: '#000', color: '#fff' }}/>
-                            <input type="number" step="0.1" value={selectedEntity.transform.position.y} onChange={e => { selectedEntity.transform!.position.y = Number(e.target.value); update(); }} style={{ width: 50, background: '#000', color: '#fff' }}/>
+                            <input type="number" step="0.1" value={selectedEntity.transform.position[0]} onChange={e => { selectedEntity.transform!.position[0] = Number(e.target.value); update(); }} style={{ width: 50, background: '#000', color: '#fff' }}/>
+                            <input type="number" step="0.1" value={selectedEntity.transform.position[1]} onChange={e => { selectedEntity.transform!.position[1] = Number(e.target.value); update(); }} style={{ width: 50, background: '#000', color: '#fff' }}/>
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <span>Rotation</span>
-                            <input type="number" step="1" value={Math.round(THREE.MathUtils.radToDeg(selectedEntity.transform.rotation))} onChange={e => { selectedEntity.transform!.rotation = THREE.MathUtils.degToRad(Number(e.target.value)); update(); }} style={{ width: 60, background: '#000', color: '#fff' }}/>
+                            <input type="number" step="1" value={Math.round(selectedEntity.transform.rotation * (180/Math.PI))} onChange={e => { selectedEntity.transform!.rotation = Number(e.target.value) * (Math.PI/180); update(); }} style={{ width: 60, background: '#000', color: '#fff' }}/>
                         </div>
                     </div>
                 )}
@@ -50,7 +49,7 @@ export const ObjectProperties: React.FC<ObjectPropertiesProps> = ({ selectedEnti
                 {selectedEntity.sdfCollider && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                         <span>SDF Params</span>
-                        {selectedEntity.sdfCollider.parameters.map((p, i) => (
+                        {Array.from(selectedEntity.sdfCollider.parameters).map((p, i) => (
                             <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                                 <span style={{ fontSize: 9, color: '#666' }}>Param {i}</span>
                                 <input type="number" step="0.1" value={p} onChange={e => { selectedEntity.sdfCollider!.parameters[i] = Number(e.target.value); update(); }} style={{ width: 60, background: '#000', color: '#fff' }}/>

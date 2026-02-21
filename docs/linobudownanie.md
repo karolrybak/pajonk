@@ -1,0 +1,8 @@
+ook, jak odpauzowałem to się włączył renderer wtedy. Ogólnie to musimy lepiej obmyśleć działanie tej pauzy. Bo właściwie to tak naprawdę nie powinna być pauza jako zatrzymanie całkowite silnika fizycznego i renderingu, tylko  swojego rodzaju "freezee". Bo generalnie chodzi o to żeby dało się podczas budowania liny np wcelować w inną linę, czy powstrzymać kulkę przed spadaniem, ale ta lina którą obecnie tworzymy musi być symulowana. Potrzebne nam też jeszcze będą gizma w edytorze. Budowanie liny:
+1. Włączamy tool liny, pojawia nam się gizmo, małe kółko które zmienia kolor w zależności od tego czy lina zbudowana w danym miejscu zostanie przypięta do ściany/obiektu statycznego/obiektu dynamicznego, czy też pozostanie wolnym nieprzypiętym końcem
+2. Po kliknięciu wchodzimy w tryb budowania auto, w tym trybie do końca liny automatycznie dodawane są nowe elementy jeśli zachodzi taka potrzeba. 
+Technicznie powinno to działać tak, że do kursora myszy przypinamy tymczasowy rozciągliwy constraint długości, a do niego właściwą linę. Jeśli wykryjemy że ten nasz bufor wydłużył się powyżej dopuszczalnej granicy to dodajemy nowy element na końcu liny.
+Teraz w trybie auto user może przełączyć się do trybu manual za pomocą MMB lub scrolla. W trybie manual user sam decyduje o tym ile fragmentów będzie mieć lina i kontroluje to za pomocą scrolla. Scroll up, dodaje nowe segmenty, Scroll down usuwa. Segmenty zawsze są usuwane/dodawane z końca liny przypiętego do myszki. User może przełączyć z powrotem w tryb auto za pomocą MMB
+3. Cały czas wyświetlane jest nasze gizmo, które teraz już pokazuje czy drugi koniec liny będzie przypięty czy wolny. LMB zakańcza budowę liny, natomiast RMB -> Cancel
+
+A i zrobiłeś pajęczynke :)

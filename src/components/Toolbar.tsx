@@ -35,7 +35,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ tool, setTool, placement, setP
             <button onClick={() => { setTool('select'); setPlacement(null); }} style={btnStyle(tool === 'select')}>SELECT</button>
             
             <div style={{ position: 'relative' }}>
-                <button onClick={() => setActiveMenu(activeMenu === 'static' ? null : 'static')} style={btnStyle(placement?.type === 'static')}>STATIC ▾</button>
+                <button onClick={() => setActiveMenu(activeMenu === 'static' ? null : 'static')} style={btnStyle(tool === 'create_obj' && placement?.type === 'static')}>STATIC ▾</button>
                 {activeMenu === 'static' && (
                     <div style={menuStyle}>
                         <button onClick={() => handlePlacement('static', 'box')} style={itemStyle}>Static Box</button>
@@ -45,7 +45,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ tool, setTool, placement, setP
             </div>
 
             <div style={{ position: 'relative' }}>
-                <button onClick={() => setActiveMenu(activeMenu === 'dynamic' ? null : 'dynamic')} style={btnStyle(placement?.type === 'dynamic')}>PARTICLE ▾</button>
+                <button onClick={() => setActiveMenu(activeMenu === 'dynamic' ? null : 'dynamic')} style={btnStyle(tool === 'create_obj' && placement?.type === 'dynamic')}>PARTICLE ▾</button>
                 {activeMenu === 'dynamic' && (
                     <div style={menuStyle}>
                         <button onClick={() => handlePlacement('dynamic', 'circle')} style={itemStyle}>New Particle</button>
@@ -53,7 +53,7 @@ export const Toolbar: React.FC<ToolbarProps> = ({ tool, setTool, placement, setP
                 )}
             </div>
 
-            <button onClick={() => setTool('build_line')} style={btnStyle(tool === 'build_line')}>ROPE</button>
+            <button onClick={() => { setTool('build_line'); setPlacement(null); }} style={btnStyle(tool === 'build_line')}>ROPE</button>
         </div>
     );
 };

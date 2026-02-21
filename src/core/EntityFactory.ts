@@ -1,42 +1,41 @@
-import * as THREE from 'three';
 import { world, type Entity } from '../ecs';
-import { createSDFMaterial } from '../materials/sdfMaterial';
+import { WebPhysics } from '../webPhysics';
 
-export const addObject = (scene: THREE.Scene | null, type: 'static' | 'dynamic', shape: string, position: THREE.Vector2): Entity => {
+export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape: string, position: Float32Array, customRadius?: number, appearance?: number): Entity => {
     const id = Math.random().toString(36).substr(2, 9);
     const isStatic = type === 'static';
-    const params: [number, number, number, number] = shape === 'circle' ? [0.5, 0, 0, 0] : [10, 1, 0, 0];
-    
-    const sizeForMat = shape === 'circle' ? new THREE.Vector2(params[0], params[0]) : new THREE.Vector2(params[0] * 2, params[1] * 2);
-    const boundsX = params[0] * 2 + 1.0;
-    const boundsY = (shape === 'circle' ? params[0] : params[1]) * 2 + 1.0;
-    const meshScale = new THREE.Vector2(boundsX, boundsY);
+    const radius = customRadius ?? 0.5;
+    const params = new Float32Array(shape === 'circle' ? [radius, 0, 0, 0] : [1.0, 0.5, 0, 0]);
 
     const ent: Entity = {
         id, name: `${type}_${shape}_${id}`, tags: [type],
-        transform: { position: position.clone(), rotation: 0 },
-        velocity: new THREE.Vector2(),
-        force: new THREE.Vector2(),
-        physicsBody: { isStatic, mass: isStatic ? 0 : 10, friction: 0.5, collisionMask: 0xFF, groupId: 0, appearance: isStatic ? 1 : 2, flags: 0 },
+        transform: { position: new Float32Array(position), rotation: 0 },
+        velocity: new Float32Array([0, 0]),
+        force: new Float32Array([0, 0]),
+        physicsBody: { 
+            isStatic, 
+            mass: isStatic ? 0 : 1.0, 
+            friction: 0.5, 
+            collisionMask: 0xFF, 
+            groupId: 0, 
+            appearance: appearance ?? (isStatic ? 1 : 2), 
+            flags: 0 
+        },
         sdfCollider: { shapeType: shape === 'circle' ? 0 : 1, parameters: params, rotation: 0 }
     };
 
-    const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(2, 2), 
-        createSDFMaterial(
-            ent.sdfCollider.shapeType, 
-            sizeForMat, 
-            new THREE.Vector2(0,0), 
-            new THREE.Color(isStatic ? 0x444444 : 0x00ff88), 
-            meshScale.clone().multiplyScalar(0.5)
-        ).mat
-    );
-    
-    mesh.scale.set(meshScale.x / 2, meshScale.y / 2, 1);
-    mesh.position.set(position.x, position.y, -0.1);
-    ent.renderable = { mesh };
+    if (isStatic) {
+        const idx = physics.numObstacles++;
+        physics.setObstacle(idx, position, 0, ent.sdfCollider!.shapeType, ent.sdfCollider!.parameters, 0.5, ent.physicsBody!.appearance, 0);
+    } else {
+        const indices = physics.allocateParticles(1);
+        const idx = indices[0];
+        if (idx !== undefined) {
+            world.addComponent(ent, 'physicsParticle', { index: idx });
+            physics.setParticle(idx, position, position, 1.0, 0.5, params[0]!, 0xFF, ent.physicsBody!.appearance, 0);
+        }
+    }
 
     world.add(ent);
-    if (scene) scene.add(mesh);
     return ent;
 };

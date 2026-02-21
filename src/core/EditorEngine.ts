@@ -1,166 +1,149 @@
-import * as THREE from 'three';
+import { vec2 } from 'wgpu-matrix';
 import { AppEngine } from './AppEngine';
 import { getMouseWorld } from '../utils';
 import { BOUNDS } from '../constants';
 import { addObject } from './EntityFactory';
 import { world, type Entity } from '../ecs';
 import type { ToolMode, PlacementState } from '../types';
+import { RopeSystem } from './RopeSystem';
 
 export class EditorEngine extends AppEngine {
     tool: ToolMode = 'select';
     placement: PlacementState = null;
     selectedEntityId: string | null = null;
     draggedEntity: Entity | null = null;
-    dragOffset = new THREE.Vector2();
-    activeRopeId: string | null = null;
+    dragOffset = new Float32Array([0, 0]);
     
-    private onMouseDownBound: (e: MouseEvent) => void;
-    private onMouseMoveBound: (e: MouseEvent) => void;
-    private onMouseUpBound: (e: MouseEvent) => void;
-
+    ropeMode: 'auto' | 'manual' = 'auto';
+    activeRope: Entity | null = null;
     onSelectEntity?: (ent: Entity | null) => void;
 
-    constructor(canvas: HTMLElement) {
-        super(canvas);
-        this.onMouseDownBound = this.onMouseDown.bind(this);
-        this.onMouseMoveBound = this.onMouseMove.bind(this);
-        this.onMouseUpBound = this.onMouseUp.bind(this);
-        this.onWheel = this.onWheel.bind(this);
+    constructor(container: HTMLElement) {
+        super(container);
     }
 
-    async init() {
+    override async init() {
         await super.init();
-        window.addEventListener('mousedown', this.onMouseDownBound);
-        window.addEventListener('mousemove', this.onMouseMoveBound);
-        window.addEventListener('mouseup', this.onMouseUpBound);
-        window.addEventListener('wheel', this.onWheel);
-        // Default floor
-        addObject(this.scene, 'static', 'box', new THREE.Vector2(0, -6));
+        
+        window.addEventListener('mousedown', (e) => this.onMouseDown(e));
+        window.addEventListener('mousemove', (e) => this.onMouseMove(e));
+        window.addEventListener('mouseup', () => (this.draggedEntity = null));
+        window.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
+        window.addEventListener('contextmenu', (e) => {
+             if (this.tool === 'build_line' || this.activeRope) e.preventDefault();
+             if (this.activeRope) this.cancelRope();
+        });
+
+        addObject(this.physics, 'static', 'box', new Float32Array([0, -6]));
     }
 
-    dispose() {
-        window.removeEventListener('mousedown', this.onMouseDownBound);
-        window.removeEventListener('mousemove', this.onMouseMoveBound);
-        window.removeEventListener('mouseup', this.onMouseUpBound);
-        window.removeEventListener('wheel', this.onWheel);
-        super.dispose();
+    private cancelRope() {
+        if (!this.activeRope) return;
+        const rope = this.activeRope.physicsRope!;
+        for (const seg of rope.segments) world.remove(seg);
+        
+        const constraints = world.entities.filter(e => 
+            e.physicsConstraint && 
+            (rope.segments.includes(e.physicsConstraint.targetA) || 
+             (typeof e.physicsConstraint.targetB !== 'string' && !(e.physicsConstraint.targetB instanceof Float32Array) && rope.segments.includes(e.physicsConstraint.targetB as any)))
+        );
+        for (const c of constraints) world.remove(c);
+        
+        world.remove(this.activeRope);
+        this.activeRope = null;
     }
 
     private onMouseDown(e: MouseEvent) {
-        if (e.target !== this.renderer.domElement) return;
+        if (e.target !== this.canvas) return;
         const pos = getMouseWorld(e, this.canvas, BOUNDS);
+        
+        if (e.button === 1) { // MMB
+             this.ropeMode = this.ropeMode === 'auto' ? 'manual' : 'auto';
+             return;
+        }
 
         if (this.tool === 'build_line') {
-            const anchor = this.physics.findAnchor(pos);
-            if (!this.activeRopeId) {
-                const startPos = anchor ? anchor.pos : pos.clone();
-                const seg0 = addObject(this.scene, 'dynamic', 'circle', startPos);
-                const seg1 = addObject(this.scene, 'dynamic', 'circle', pos.clone());
-                seg0.physicsBody!.mass = anchor?.type === 'static' ? 0 : 1;
-                seg1.sdfCollider!.parameters[0] = 0.05;
-                seg0.sdfCollider!.parameters[0] = 0.05;
+            if (e.button === 2) return;
+            
+            if (!this.activeRope) {
+                const anchor = this.physics.findAnchor(pos);
+                const startPos = anchor ? anchor.pos : pos.slice();
+                
+                const seg0 = addObject(this.physics, 'dynamic', 'circle', startPos, 0.05, 6);
+                const seg1 = addObject(this.physics, 'dynamic', 'circle', startPos.slice(), 0.05, 6);
+                
+                // If pinned to static, give it infinite mass (0) to stay fixed
+                if (anchor?.type === 'static') seg0.physicsBody!.mass = 0;
 
-                const ropeEnt = world.add({
-                    id: Math.random().toString(36).substr(2, 9),
-                    name: 'rope',
-                    tags: ['rope', 'building'],
+                this.activeRope = world.add({
+                    id: Math.random().toString(36).substr(2, 9), name: 'rope', tags: ['rope', 'building'],
                     physicsRope: {
-                        headAnchor: { target: anchor?.type === 'particle' ? world.entities[anchor.targetIdx!].id : (anchor ? anchor.pos : seg0.transform!.position.clone()), offset: new THREE.Vector2() },
-                        tailAnchor: { target: seg1.id, offset: new THREE.Vector2() },
-                        segments: [seg0.id, seg1.id],
-                        segmentLength: 0.1,
-                        compliance: 0.0001,
+                        headAnchor: { target: anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : startPos, offset: new Float32Array([0,0]) },
+                        tailAnchor: { target: seg1, offset: new Float32Array([0,0]) },
+                        segments: [seg0, seg1], segmentLength: 0.1, compliance: 0.0001,
                     }
                 });
-                this.activeRopeId = ropeEnt.id;
 
-                // Add first constraint
-                world.add({
-                    id: Math.random().toString(36).substr(2, 9),
-                    physicsConstraint: {
-                        type: anchor?.type === 'particle' ? 0 : (anchor ? 3 : 0),
-                        targetA: seg0.id,
-                        targetB: anchor?.type === 'particle' ? world.entities[anchor.targetIdx!].id : (anchor ? anchor.pos : seg0.transform!.position.clone()),
-                        restValue: 0.05,
-                        stiffness: 0,
-                        index: undefined as any
-                    }
-                });
+                const targetB = anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : startPos;
+                RopeSystem.createLink(seg0, targetB, 0.05, 0);
+                RopeSystem.createLink(seg0, seg1, 0.1, 0.0001);
             } else {
-                const ropeEnt = world.entities.find(e => e.id === this.activeRopeId);
-                if (ropeEnt && ropeEnt.physicsRope) {
-                    const lastId = ropeEnt.physicsRope.segments[ropeEnt.physicsRope.segments.length-1];
-                    const lastEnt = world.entities.find(e => e.id === lastId);
-                    if (anchor && lastEnt) {
-                        lastEnt.transform!.position.copy(anchor.pos);
-                        lastEnt.physicsBody!.mass = anchor.type === 'static' ? 0 : 1;
-                        if (anchor.type === 'particle') {
-                             world.add({
-                                id: Math.random().toString(36).substr(2, 9),
-                                physicsConstraint: { type: 0, targetA: lastId, targetB: world.entities[anchor.targetIdx!].id, restValue: 0.05, stiffness: 0, index: undefined as any }
-                             });
-                        }
-                    }
-                    const bIdx = ropeEnt.tags.indexOf('building');
-                    if (bIdx !== -1) ropeEnt.tags.splice(bIdx, 1);
-                    this.activeRopeId = null;
-                }
+                this.activeRope.tags = this.activeRope.tags.filter(t => t !== 'building');
+                this.activeRope = null;
             }
             return;
         }
 
-        if (this.tool === 'select') {
-            const ent = world.entities.find(e => e.transform && e.transform.position.distanceTo(pos) < 0.6);
-            
-            // Clear flags from previous selection if any
-            if (this.selectedEntityId) {
-                const prev = world.entities.find(e => e.id === this.selectedEntityId);
-                if (prev?.physicsBody) { prev.physicsBody.flags &= ~0x1; this.queuedSync = true; }
-            }
-
+        if (this.tool === 'select' && e.button === 0) {
+            const ent = world.entities.find(e => e.transform && vec2.distance(e.transform.position, pos) < 0.6);
             if (ent) {
                 this.selectedEntityId = ent.id;
                 this.draggedEntity = ent;
-                this.dragOffset.copy(ent.transform!.position).sub(pos);
-                if (ent.physicsBody) { ent.physicsBody.flags |= 0x1; }
+                vec2.sub(ent.transform!.position, pos, this.dragOffset);
                 this.onSelectEntity?.(ent);
-                this.queuedSync = true;
             } else {
-                this.selectedEntityId = null;
+                this.selectedEntityId = null; 
                 this.onSelectEntity?.(null);
             }
         } else if (this.tool === 'create_obj' && this.placement) {
-            addObject(this.scene, this.placement.type, this.placement.shape, pos);
+            addObject(this.physics, this.placement.type as 'static' | 'dynamic', this.placement.shape, pos);
         }
     }
 
     private onMouseMove(e: MouseEvent) {
         const pos = getMouseWorld(e, this.canvas, BOUNDS);
         (this as any).mouseWorld = pos;
+        
+        if (this.renderer) {
+            const anchor = this.physics.findAnchor(pos);
+            const color = anchor ? (anchor.type === 'static' ? new Float32Array([0.2, 0.4, 1.0, 0.8]) : new Float32Array([0.2, 1.0, 0.4, 0.8])) : new Float32Array([0.8, 0.8, 0.8, 0.5]);
+            this.renderer.updateGizmo(pos, color);
+        }
+
         if (this.draggedEntity && this.draggedEntity.transform) {
-            const pos = getMouseWorld(e, this.canvas, BOUNDS);
-            const newPos = pos.add(this.dragOffset);
-            this.draggedEntity.transform.position.copy(newPos);
-            if (this.draggedEntity.physicsParticle) {
-                const idx = this.draggedEntity.physicsParticle.index;
-                const b = this.draggedEntity.physicsBody!;
-                // Forced teleport in editor
-                this.physics.setParticle(idx, newPos, newPos, b.mass, b.friction, this.draggedEntity.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
-                // Ensure it gets synced to GPU
-                this.physics.queuedSync = true;
-            }
+            this.draggedEntity.transform.position.set(vec2.add(pos, this.dragOffset) as Float32Array);
         }
     }
 
-    private onMouseUp() {
-        this.draggedEntity = null;
-    }
-
     private onWheel(e: WheelEvent) {
-        if (this.activeRopeId) {
-            const ropeEnt = world.entities.find(e => e.id === this.activeRopeId);
-            if (ropeEnt && ropeEnt.physicsRope) {
-                ropeEnt.physicsRope.segmentLength = Math.max(0.02, ropeEnt.physicsRope.segmentLength + (e.deltaY > 0 ? 0.01 : -0.01));
+        if (this.activeRope && this.ropeMode === 'manual') {
+            e.preventDefault();
+            const rope = this.activeRope.physicsRope!;
+            if (e.deltaY < 0) {
+                const last = rope.segments[rope.segments.length-1];
+                if (last && last.transform) {
+                    const nextPos = vec2.add(last.transform.position, new Float32Array([0, 0.1])) as Float32Array;
+                    const newSeg = addObject(this.physics, 'dynamic', 'circle', nextPos, 0.05, 6);
+                    RopeSystem.createLink(last, newSeg, rope.segmentLength, rope.compliance);
+                    rope.segments.push(newSeg);
+                }
+            } else if (rope.segments.length > 2) {
+                const removed = rope.segments.pop();
+                if (removed) {
+                    world.remove(removed);
+                    const c = world.entities.find(e => e.physicsConstraint && (e.physicsConstraint.targetA === removed || e.physicsConstraint.targetB === removed));
+                    if (c) world.remove(c);
+                }
             }
         }
     }

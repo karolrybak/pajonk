@@ -1,5 +1,4 @@
 import { World } from 'miniplex';
-import * as THREE from 'three';
 
 export type Entity = {
     id: string;
@@ -7,12 +6,12 @@ export type Entity = {
     tags: string[];
 
     transform?: {
-        position: THREE.Vector2;
+        position: Float32Array;
         rotation: number;
     };
 
-    velocity?: THREE.Vector2;
-    force?: THREE.Vector2;
+    velocity?: Float32Array;
+    force?: Float32Array;
 
     physicsBody?: {
         isStatic: boolean;
@@ -26,7 +25,7 @@ export type Entity = {
 
     sdfCollider?: {
         shapeType: number;
-        parameters: [number, number, number, number];
+        parameters: Float32Array;
         rotation: number;
     };
 
@@ -36,24 +35,20 @@ export type Entity = {
 
     physicsConstraint?: {
         type: number;
-        targetA: string;
-        targetB: string | THREE.Vector2;
-        targetC?: string;
+        targetA: Entity;
+        targetB: Entity | Float32Array;
+        targetC?: Entity;
         restValue: number;
         stiffness: number;
         index: number;
     };
 
     physicsRope?: {
-        headAnchor: { target: string | THREE.Vector2; offset: THREE.Vector2 };
-        tailAnchor: { target: string | THREE.Vector2; offset: THREE.Vector2 };
-        segments: string[];
+        headAnchor: { target: Entity | Float32Array; offset: Float32Array };
+        tailAnchor: { target: Entity | Float32Array; offset: Float32Array };
+        segments: Entity[];
         segmentLength: number;
         compliance: number;
-    };
-
-    renderable?: {
-        mesh: THREE.Object3D;
     };
 };
 

@@ -1,39 +1,38 @@
-import * as THREE from 'three';
 import { AppEngine } from './AppEngine';
 import { Zyzio } from './Zyzio';
 import { getMouseWorld } from '../utils';
 import { BOUNDS } from '../constants';
-import { addObject } from './EntityFactory';
 
 export class PlayerEngine extends AppEngine {
     playerRig: Zyzio | null = null;
-    mouseWorld = new THREE.Vector2();
+    mouseWorld = new Float32Array([0, 0]);
 
-    constructor(canvas: HTMLElement) {
-        super(canvas);
+    constructor(container: HTMLElement) {
+        super(container);
         this.onMouseMove = this.onMouseMove.bind(this);
     }
 
-    async init() {
+    override async init() {
         await super.init();
         window.addEventListener('mousemove', this.onMouseMove);
     }
 
-    dispose() {
+    override dispose() {
         window.removeEventListener('mousemove', this.onMouseMove);
         if (this.playerRig) this.playerRig.dispose();
         super.dispose();
     }
 
     spawnPlayer() {
-        this.playerRig = new Zyzio(this.physics, new THREE.Vector2(0, 0));
+        this.playerRig = new Zyzio(this.physics, new Float32Array([0, 0]));
     }
 
     onMouseMove(e: MouseEvent) {
-        this.mouseWorld.copy(getMouseWorld(e, this.canvas, BOUNDS));
+        const pos = getMouseWorld(e, this.canvas, BOUNDS);
+        this.mouseWorld.set(pos);
     }
 
-    protected onUpdate() {
+    protected override onUpdate() {
         if (this.physics.ready) {
             if (this.playerRig) {
                 this.playerRig.update(this.mouseWorld);
