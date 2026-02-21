@@ -25,6 +25,12 @@ export type Entity = {
     friction?: number;
     selected?: boolean;
     tags: string[];
+    special?: {
+        type: 'player_spawn';
+    };
+    playerPart?: {
+        role: 'head' | 'torso';
+    };
 };
 
 export const world = new World<Entity>();

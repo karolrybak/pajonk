@@ -8,8 +8,8 @@ export const listLevels = async (): Promise<string[]> => {
     return await res.json();
 };
 
-export const saveLevel = async (name: string, physics: WebPhysics) => {
-    const state = {
+export const serializeWorld = (physics: WebPhysics) => {
+    return {
         entities: world.entities.map(e => ({
             id: e.id,
             name: e.name,
@@ -20,7 +20,8 @@ export const saveLevel = async (name: string, physics: WebPhysics) => {
             physics: e.physics ? { bodyType: e.physics.bodyType, mass: e.physics.mass, radius: e.physics.radius } : undefined,
             attachable: e.attachable,
             friction: e.friction,
-            tags: e.tags
+            tags: e.tags,
+            special: e.special
         })),
         ropes: physics.ropes.map(r => {
             const pins: any[] = [];
@@ -55,7 +56,31 @@ export const saveLevel = async (name: string, physics: WebPhysics) => {
             };
         })
     };
-    
+};
+
+export const deserializeWorld = async (state: any, engine: any) => {
+    engine.clearScene();
+    const idToEnt = new Map<string, Entity>();
+
+    for (const entData of state.entities) {
+        const ent = addObject(engine.physics, entData.tags[0] as any, entData.sdfCollider?.type || (entData.special?.type === 'player_spawn' ? 'spawn_point' : 'circle'), {
+            ...entData,
+            position: new THREE.Vector2(entData.position.x, entData.position.y),
+            scale: new THREE.Vector2(entData.scale.x, entData.scale.y)
+        });
+        if (ent) idToEnt.set(ent.id, ent);
+    }
+
+    for (const ropeData of state.ropes) {
+        rebuildRope(engine.physics, ropeData.nodes, ropeData.pins, idToEnt);
+    }
+
+    engine.physics.syncGPU();
+    engine.physics.updateVisuals();
+};
+
+export const saveLevel = async (name: string, physics: WebPhysics) => {
+    const state = serializeWorld(physics);
     await fetch(`/api/levels?name=${name}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -67,28 +92,7 @@ export const loadLevel = async (name: string, engine: any) => {
     const res = await fetch(`/api/levels?name=${name}`);
     if (!res.ok) return;
     const state = await res.json();
-
-    engine.clearScene();
-
-    const idToEnt = new Map<string, Entity>();
-
-    // 1. Load static and dynamic entities
-    for (const entData of state.entities) {
-        const ent = addObject(engine.physics, entData.tags[0] as any, entData.sdfCollider?.type || 'circle', {
-            ...entData,
-            position: new THREE.Vector2(entData.position.x, entData.position.y),
-            scale: new THREE.Vector2(entData.scale.x, entData.scale.y)
-        });
-        if (ent) idToEnt.set(ent.id, ent);
-    }
-
-    // 2. Load ropes and establish internal constraints
-    for (const ropeData of state.ropes) {
-        rebuildRope(engine.physics, ropeData.nodes, ropeData.pins, idToEnt);
-    }
-
-    engine.physics.syncGPU();
-    engine.physics.updateVisuals();
+    await deserializeWorld(state, engine);
 };
 
 const rebuildRope = (physics: WebPhysics, nodes: any[], pins: any[], idToEnt: Map<string, Entity>) => {
@@ -125,7 +129,7 @@ const rebuildRope = (physics: WebPhysics, nodes: any[], pins: any[], idToEnt: Ma
                 if (cIdx !== -1) {
                     const color = physics.assignColor(ropeNodeIdx, targetIdx);
                     physics.setDistConstraint(cIdx, ropeNodeIdx, targetIdx, pin.length, 0, color);
-                    physics.constraintVisible[cIdx] = 0; // Hide anchor lines visually
+                    physics.constraintVisible[cIdx] = 0;
                     anchorConstraints.push(cIdx);
                 }
             }

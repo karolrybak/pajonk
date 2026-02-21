@@ -1,0 +1,121 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { type Entity } from '../ecs';
+import { EditorEngine } from '../core/EditorEngine';
+import { deleteEntity, updatePhysicsFromUI } from '../core/EntityFactory';
+import { loadLevel } from '../core/LevelSystem';
+import type { ToolMode, PlacementState } from '../types';
+import { TopBar } from '../components/TopBar';
+import { ObjectList } from '../components/ObjectList';
+import { ObjectProperties } from '../components/ObjectProperties';
+import { Toolbar } from '../components/Toolbar';
+
+interface EditorViewProps {
+    initialLevelName: string;
+}
+
+export const EditorView: React.FC<EditorViewProps> = ({ initialLevelName }) => {
+    const canvasRef = useRef<HTMLDivElement>(null);
+    const editorRef = useRef<EditorEngine | null>(null);
+
+    const [levelName, setLevelName] = useState(initialLevelName);
+    const [tool, setTool] = useState<ToolMode>('select');
+    const [lineBuildMode, setLineBuildMode] = useState<'manual' | 'auto'>('auto');
+    const [isPaused, setIsPaused] = useState(true);
+    const [showPanels, setShowPanels] = useState({ list: true, props: true });
+    const [selectedEntity, setSelectedEntity] = useState<Entity | null>(null);
+    const [isLevelMenuOpen, setIsLevelMenuOpen] = useState(false);
+    const [isStaticMenuOpen, setIsStaticMenuOpen] = useState(false);
+    const [isDynamicMenuOpen, setIsDynamicMenuOpen] = useState(false);
+    const [isSpecialMenuOpen, setIsSpecialMenuOpen] = useState(false);
+    const [placement, setPlacement] = useState<PlacementState>(null);
+    const [fps, setFps] = useState(0);
+
+    useEffect(() => {
+        if (!canvasRef.current) return;
+        const editor = new EditorEngine(canvasRef.current);
+        editor.onFpsUpdate = setFps;
+        editor.onSelectEntity = setSelectedEntity;
+        editor.onToggleLineBuildMode = () => setLineBuildMode(p => p === 'manual' ? 'auto' : 'manual');
+        editor.onManualReel = () => setLineBuildMode('manual');
+        editor.init().then(() => {
+            if (levelName) loadLevel(levelName, editor);
+        });
+        editorRef.current = editor;
+        return () => editor.dispose();
+    }, []);
+
+    useEffect(() => { 
+        if (tool !== 'create_obj') {
+            setPlacement(null);
+            setIsStaticMenuOpen(false);
+            setIsDynamicMenuOpen(false);
+            setIsSpecialMenuOpen(false);
+        }
+        if (editorRef.current) editorRef.current.tool = tool; 
+    }, [tool]);
+
+    useEffect(() => { if (editorRef.current) editorRef.current.lineBuildMode = lineBuildMode; }, [lineBuildMode]);
+    useEffect(() => { if (editorRef.current) editorRef.current.isPaused = isPaused; }, [isPaused]);
+    useEffect(() => { if (editorRef.current) editorRef.current.setPlacement(placement); }, [placement]);
+    useEffect(() => { if (editorRef.current) editorRef.current.selectedEntityId = selectedEntity?.id || null; }, [selectedEntity]);
+
+    const handleDelete = (ent: Entity) => {
+        if (!editorRef.current) return;
+        deleteEntity(editorRef.current.physics, ent);
+        if (selectedEntity?.id === ent.id) setSelectedEntity(null);
+    };
+
+    const handleUpdatePhysics = (ent: Entity) => {
+        if (!editorRef.current) return;
+        updatePhysicsFromUI(editorRef.current.physics, ent);
+        setSelectedEntity({...ent});
+    };
+
+    return (
+        <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+            <TopBar 
+                isLevelMenuOpen={isLevelMenuOpen} 
+                setIsLevelMenuOpen={setIsLevelMenuOpen} 
+                isPaused={isPaused} 
+                setIsPaused={setIsPaused}
+                showPanels={showPanels} 
+                setShowPanels={setShowPanels}
+                onDeleteEntity={handleDelete}
+                engine={editorRef.current}
+                levelName={levelName}
+                setLevelName={setLevelName}
+            />
+
+            <div style={{ flex: 1, position: 'relative', display: 'flex', overflow: 'hidden' }}>
+                <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column', background: '#111', borderRight: '1px solid #333' }}>
+                    {showPanels.list && <ObjectList selectedEntity={selectedEntity} setSelectedEntity={setSelectedEntity} />}
+                    {showPanels.props && selectedEntity && <ObjectProperties selectedEntity={selectedEntity} setSelectedEntity={setSelectedEntity} onDelete={handleDelete} handleUpdatePhysics={handleUpdatePhysics} engine={editorRef.current} />}
+                </div>
+
+                <div ref={canvasRef} style={{ flex: 1, position: 'relative', background: '#000', overflow: 'hidden' }}>
+                   <Toolbar 
+                        tool={tool} 
+                        setTool={setTool} 
+                        placement={placement} 
+                        setPlacement={setPlacement}
+                        isStaticMenuOpen={isStaticMenuOpen} 
+                        setIsStaticMenuOpen={setIsStaticMenuOpen}
+                        isDynamicMenuOpen={isDynamicMenuOpen} 
+                        setIsDynamicMenuOpen={setIsDynamicMenuOpen}
+                        isSpecialMenuOpen={isSpecialMenuOpen}
+                        setIsSpecialMenuOpen={setIsSpecialMenuOpen}
+                   />
+                   <div style={{ position: 'absolute', top: 10, left: 10, color: '#444', fontSize: 10 }}>
+                        FPS: {fps}
+                        {tool === 'build_line' && (
+                            <>
+                                <span style={{ marginLeft: 10 }}>| MODE: {lineBuildMode.toUpperCase()}</span><br/>
+                                <span style={{ color: '#666' }}>MMB: SWITCH MODES | SCROLL: REEL/UNREEL</span>
+                            </>
+                        )}
+                   </div>
+                </div>
+            </div>
+        </div>
+    );
+};

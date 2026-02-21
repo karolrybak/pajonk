@@ -10,6 +10,8 @@ interface ToolbarProps {
     setIsStaticMenuOpen: (v: boolean) => void;
     isDynamicMenuOpen: boolean;
     setIsDynamicMenuOpen: (v: boolean) => void;
+    isSpecialMenuOpen: boolean;
+    setIsSpecialMenuOpen: (v: boolean) => void;
 }
 
 export const Toolbar: React.FC<ToolbarProps> = ({ 
@@ -20,7 +22,9 @@ export const Toolbar: React.FC<ToolbarProps> = ({
     isStaticMenuOpen, 
     setIsStaticMenuOpen, 
     isDynamicMenuOpen, 
-    setIsDynamicMenuOpen 
+    setIsDynamicMenuOpen,
+    isSpecialMenuOpen,
+    setIsSpecialMenuOpen
 }) => (
     <div style={{ position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 2, background: '#111', padding: 3, borderRadius: 4, border: '1px solid #444', zIndex: 20 }}>
         <button onClick={() => setTool('select')} style={{ background: tool === 'select' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>SELECT</button>
@@ -42,6 +46,14 @@ export const Toolbar: React.FC<ToolbarProps> = ({
             {isDynamicMenuOpen && tool === 'create_obj' && (
                 <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>
                     <button onClick={() => { setPlacement({type: 'dynamic', shape: 'circle'}); setIsDynamicMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Dynamic Ball</button>
+                </div>
+            )}
+        </div>
+        <div style={{ position: 'relative' }}>
+            <button onClick={() => { setTool('create_obj'); setIsSpecialMenuOpen(!isSpecialMenuOpen); setIsStaticMenuOpen(false); setIsDynamicMenuOpen(false); }} style={{ background: tool === 'create_obj' && placement?.type === 'special' ? '#4a90e2' : '#222', color: '#fff', border: 'none', padding: '6px 14px', fontSize: 11, cursor: 'pointer' }}>SPECIAL ▾</button>
+            {isSpecialMenuOpen && tool === 'create_obj' && (
+                <div style={{ position: 'absolute', bottom: '100%', left: 0, background: '#111', border: '1px solid #444', display: 'flex', flexDirection: 'column', width: 140, marginBottom: 5 }}>
+                    <button onClick={() => { setPlacement({type: 'special', shape: 'spawn_point'}); setIsSpecialMenuOpen(false); }} style={{ padding: '8px', background: 'none', border: 'none', color: '#ccc', fontSize: 10, textAlign: 'left', cursor: 'pointer' }}>Player Spawn</button>
                 </div>
             )}
         </div>
