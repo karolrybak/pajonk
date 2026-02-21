@@ -72,6 +72,7 @@ const App = () => {
                 showPanels={showPanels} 
                 setShowPanels={setShowPanels}
                 onDeleteEntity={handleDelete}
+                engine={engineRef.current}
             />
 
             <div style={{ flex: 1, position: 'relative', display: 'flex', overflow: 'hidden' }}>

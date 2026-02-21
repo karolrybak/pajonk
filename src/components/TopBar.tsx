@@ -1,6 +1,9 @@
 import React from 'react';
 import { world } from '../ecs';
 
+import { listLevels, saveLevel, loadLevel } from '../core/LevelSystem';
+import { EditorEngine } from '../core/EditorEngine';
+
 interface TopBarProps {
     isLevelMenuOpen: boolean;
     setIsLevelMenuOpen: (val: boolean) => void;
@@ -9,6 +12,7 @@ interface TopBarProps {
     showPanels: { list: boolean; props: boolean };
     setShowPanels: React.Dispatch<React.SetStateAction<{ list: boolean; props: boolean }>>;
     onDeleteEntity: (ent: any) => void;
+    engine: EditorEngine | null;
 }
 
 export const TopBar: React.FC<TopBarProps> = ({ 
@@ -18,8 +22,40 @@ export const TopBar: React.FC<TopBarProps> = ({
     setIsPaused, 
     showPanels, 
     setShowPanels,
-    onDeleteEntity
-}) => (
+    onDeleteEntity,
+    engine
+}) => {
+    const [levelName, setLevelName] = React.useState<string>('');
+    const [levels, setLevels] = React.useState<string[]>([]);
+    const [isLoadMenuOpen, setIsLoadMenuOpen] = React.useState(false);
+
+    const handleSave = async () => {
+        if (!engine) return;
+        let name = levelName;
+        if (!name) {
+            name = prompt('Enter level name:') || '';
+            if (!name) return;
+            setLevelName(name);
+        }
+        await saveLevel(name, engine.physics);
+        alert('Level saved!');
+    };
+
+    const handleLoadList = async () => {
+        const list = await listLevels();
+        setLevels(list);
+        setIsLoadMenuOpen(true);
+    };
+
+    const handleLoadLevel = async (name: string) => {
+        if (!engine) return;
+        await loadLevel(name, engine);
+        setLevelName(name);
+        setIsLoadMenuOpen(false);
+        setIsLevelMenuOpen(false);
+    };
+
+    return (
     <div style={{ height: 40, background: '#111', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 15px', gap: 20, zIndex: 10 }}>
         <div style={{ fontWeight: 'bold', color: '#4a90e2' }}>PAJONK V0.1.5</div>
         <div style={{ display: 'flex', gap: 10 }}>
@@ -27,9 +63,16 @@ export const TopBar: React.FC<TopBarProps> = ({
                 <button onClick={() => setIsLevelMenuOpen(!isLevelMenuOpen)} style={{ background: '#222', color: '#ccc', border: '1px solid #444', padding: '2px 10px', cursor: 'pointer' }}>Level ▾</button>
                 {isLevelMenuOpen && (
                     <div style={{ position: 'absolute', top: '100%', left: 0, background: '#222', border: '1px solid #444', zIndex: 100, display: 'flex', flexDirection: 'column', minWidth: 100 }}>
-                        <button onClick={() => { [...world.entities].forEach(onDeleteEntity); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>
-                        <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>
-                        <button onClick={() => setIsLevelMenuOpen(false)} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load</button>
+                        <button onClick={() => { engine?.clearScene(); setLevelName(''); setIsLevelMenuOpen(false); }} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>New</button>
+                        <button onClick={handleSave} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Save</button>
+                        <button onClick={handleLoadList} style={{ padding: '8px 15px', border: 'none', background: 'none', color: '#fff', textAlign: 'left', cursor: 'pointer' }}>Load ▾</button>
+                        {isLoadMenuOpen && (
+                            <div style={{ padding: '4px 15px', borderTop: '1px solid #444', display: 'flex', flexDirection: 'column' }}>
+                                {levels.map(name => (
+                                    <button key={name} onClick={() => handleLoadLevel(name)} style={{ padding: '4px 0', border: 'none', background: 'none', color: '#4a90e2', textAlign: 'left', cursor: 'pointer', fontSize: '11px' }}>{name}</button>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
@@ -40,4 +83,5 @@ export const TopBar: React.FC<TopBarProps> = ({
             <label style={{ cursor: 'pointer' }}><input type="checkbox" checked={showPanels.props} onChange={() => setShowPanels(p => ({...p, props: !p.props}))}/> Props</label>
         </div>
     </div>
-);
+    );
+};

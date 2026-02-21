@@ -309,4 +309,35 @@ export class EditorEngine {
             this.physics.adjustRopeLength(this.physics.activeRope, e.deltaY);
         }
     }
+
+    clearScene() {
+        [...world.entities].forEach(ent => {
+            if (ent.renderable) this.scene.remove(ent.renderable.mesh);
+            if (ent.physics?.particleIdx !== undefined) this.physics.freeParticle(ent.physics.particleIdx);
+            world.remove(ent);
+        });
+
+        for (const rope of this.physics.ropes) {
+            rope.indices.forEach((i: number) => this.physics.freeParticle(i));
+            rope.constraintIndices.forEach((i: number) => this.physics.freeConstraint(i));
+            rope.anchorConstraints.forEach((i: number) => this.physics.freeConstraint(i));
+        }
+
+        this.physics.ropes = [];
+        this.physics.numParticles = 0;
+        this.physics.numDistConstraints = 0;
+        this.physics.numAttachments = 0;
+        this.physics.numObstacles = 0;
+        this.physics.freeParticleIndices = [];
+        this.physics.freeConstraintIndices = [];
+        this.physics.particleActive.fill(0);
+        this.physics.constraintVisible.fill(0);
+        this.physics.particleColors.forEach(s => s.clear());
+        this.physics.colorCounts.fill(0);
+        this.physics.maxColor = 0;
+
+        this.physics.syncGPU();
+        this.physics.updateVisuals();
+        if (this.onSelectEntity) this.onSelectEntity(null);
+    }
 }

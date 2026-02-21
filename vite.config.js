@@ -1,10 +1,11 @@
 import { defineConfig } from 'vite';
+import { apiPlugin } from './src/viteApiPlugin.js';
 
 export default defineConfig({
-  base: '/pajonk/',
+  plugins: [apiPlugin],
   server: {
     port: 3000,
-    open: true
+    open: true,
   },
   assetsInclude: ['**/*.wgsl'],
   build: {
