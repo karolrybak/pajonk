@@ -103,12 +103,48 @@ export class WebPhysics {
         this.queuedSync = true;
     }
 
+    allocateConstraints(count: number): number[] {
+        const indices: number[] = [];
+        for (let i = 0; i < MAX_CONSTRAINTS && indices.length < count; i++) {
+            if (!this.constraintAlloc[i]) { this.constraintAlloc[i] = 1; indices.push(i); }
+        }
+        return indices;
+    }
+
+    releaseConstraints(indices: number[]) {
+        for (const idx of indices) { this.constraintAlloc[idx] = 0; this.constraints.fill(0, idx * 8, idx * 8 + 8); }
+        this.queuedSync = true;
+    }
+
+    setConstraint(idx: number, a: number, b: number, cIdx: number, cType: number, restValue: number, comp: number, anchor: THREE.Vector2) {
+        const off = idx * 8;
+        const u32 = new Uint32Array(this.constraints.buffer);
+        const i32 = new Int32Array(this.constraints.buffer);
+        u32[off] = a;
+        i32[off+1] = b;
+        i32[off+2] = cIdx;
+        u32[off+3] = cType;
+        this.constraints[off+4] = restValue;
+        this.constraints[off+5] = comp;
+        this.constraints[off+6] = anchor.x;
+        this.constraints[off+7] = anchor.y;
+        this.queuedSync = true;
+    }
+
     setParticle(idx: number, pos: THREE.Vector2, prevPos: THREE.Vector2, mass: number, friction: number, radius: number, mask: number) {
         const off = idx * 8;
         this.particles[off] = pos.x; this.particles[off+1] = pos.y;
         this.particles[off+2] = prevPos.x; this.particles[off+3] = prevPos.y;
         this.particles[off+4] = mass; this.particles[off+5] = friction; this.particles[off+6] = radius;
         new Uint32Array(this.particles.buffer)[off+7] = mask;
+        this.dirtyParticles.add(idx);
+        this.queuedSync = true;
+    }
+
+    addForce(idx: number, fx: number, fy: number) {
+        const off = idx * 8;
+        this.particles[off + 2] -= fx;
+        this.particles[off + 3] -= fy;
         this.dirtyParticles.add(idx);
         this.queuedSync = true;
     }

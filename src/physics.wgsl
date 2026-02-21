@@ -21,11 +21,12 @@ struct Particle {
 struct Constraint {
     a: u32,
     b: i32,
-    len: f32,
-    comp: f32,
-    anchor: vec2<f32>,
+    c: i32,
     cType: u32,
-    pad: u32
+    rest: f32,
+    comp: f32,
+    ex0: f32,
+    ex1: f32
 }
 
 struct Obstacle {
@@ -63,35 +64,87 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= 16384u) { return; }
     
     let c = C[i];
-    if (c.len == 0.0 && c.cType == 0u) { return; }
     
-    var pA = P[c.a];
-    var pB: Particle;
-    var wA = select(0.0, 1.0/pA.mass, pA.mass > 0.0);
-    var wB = 0.0;
-    var posB = c.anchor;
+    let p0 = P[c.a];
+    let w0 = select(0.0, 1.0/p0.mass, p0.mass > 0.0);
     
-    if (c.b >= 0) {
-        pB = P[u32(c.b)];
-        wB = select(0.0, 1.0/pB.mass, pB.mass > 0.0);
-        posB = pB.pos;
+    var p1 = p0;
+    var w1 = 0.0;
+    if (c.cType == 3u) {
+        p1.pos = vec2<f32>(c.ex0, c.ex1);
+    } else if (c.b >= 0) {
+        p1 = P[u32(c.b)];
+        w1 = select(0.0, 1.0/p1.mass, p1.mass > 0.0);
     }
     
-    let wSum = wA + wB;
-    if (wSum == 0.0) { return; }
-    
-    let dir = pA.pos - posB;
-    let dist = length(dir);
-    if (dist == 0.0) { return; }
-    
-    let n = dir / dist;
-    let err = dist - c.len;
+    var p2 = p0;
+    var w2 = 0.0;
+    if (c.c >= 0) {
+        p2 = P[u32(c.c)];
+        w2 = select(0.0, 1.0/p2.mass, p2.mass > 0.0);
+    }
+
     let sdt = par.dt / f32(par.substeps);
     let alpha = c.comp / (sdt * sdt);
-    let lambda = -err / (wSum + alpha);
-    
-    if (wA > 0.0) { P[c.a].pos += n * (lambda * wA); }
-    if (c.b >= 0 && wB > 0.0) { P[u32(c.b)].pos -= n * (lambda * wB); }
+
+    // 0: Distance, 3: Anchor, 4: Inequality
+    if (c.cType == 0u || c.cType == 3u || c.cType == 4u) {
+        let wSum = w0 + w1;
+        if (wSum == 0.0) { return; }
+        let dir = p0.pos - p1.pos;
+        let dist = length(dir);
+        if (dist == 0.0) { return; }
+        if (c.cType == 4u && dist >= c.rest) { return; }
+        
+        let n = dir / dist;
+        let err = dist - c.rest;
+        let lambda = -err / (wSum + alpha);
+        
+        if (w0 > 0.0) { P[c.a].pos += n * (lambda * w0); }
+        if (c.b >= 0 && w1 > 0.0) { P[u32(c.b)].pos -= n * (lambda * w1); }
+    }
+    // 1: Angular (a=end1, b=hinge, c=end2)
+    else if (c.cType == 1u) {
+        let v0 = p0.pos - p1.pos;
+        let v2 = p2.pos - p1.pos;
+        let l0_sq = dot(v0, v0);
+        let l2_sq = dot(v2, v2);
+        if (l0_sq < 0.0001 || l2_sq < 0.0001) { return; }
+        
+        let current_angle = atan2(v0.x * v2.y - v0.y * v2.x, dot(v0, v2));
+        var err = current_angle - c.rest;
+        while(err > 3.14159) { err -= 6.28318; }
+        while(err < -3.14159) { err += 6.28318; }
+        
+        let g0 = vec2<f32>(-v0.y / l0_sq, v0.x / l0_sq);
+        let g2 = vec2<f32>(v2.y / l2_sq, -v2.x / l2_sq);
+        let g1 = -(g0 + g2);
+        
+        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
+        if (sum_w_grad2 < 0.00001) { return; }
+        
+        let lambda = -err / (sum_w_grad2 + alpha);
+        if (w0 > 0.0) { P[c.a].pos += g0 * (lambda * w0); }
+        if (w1 > 0.0) { P[u32(c.b)].pos += g1 * (lambda * w1); }
+        if (w2 > 0.0) { P[u32(c.c)].pos += g2 * (lambda * w2); }
+    }
+    // 2: Area (a, b, c)
+    else if (c.cType == 2u) {
+        let g0 = vec2<f32>(p1.pos.y - p2.pos.y, p2.pos.x - p1.pos.x) * 0.5;
+        let g1 = vec2<f32>(p2.pos.y - p0.pos.y, p0.pos.x - p2.pos.x) * 0.5;
+        let g2 = vec2<f32>(p0.pos.y - p1.pos.y, p1.pos.x - p0.pos.x) * 0.5;
+        
+        let current_area = 0.5 * ((p1.pos.x - p0.pos.x) * (p2.pos.y - p0.pos.y) - (p1.pos.y - p0.pos.y) * (p2.pos.x - p0.pos.x));
+        let err = current_area - c.rest;
+        
+        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
+        if (sum_w_grad2 < 0.00001) { return; }
+        
+        let lambda = -err / (sum_w_grad2 + alpha);
+        if (w0 > 0.0) { P[c.a].pos += g0 * (lambda * w0); }
+        if (w1 > 0.0) { P[u32(c.b)].pos += g1 * (lambda * w1); }
+        if (w2 > 0.0) { P[u32(c.c)].pos += g2 * (lambda * w2); }
+    }
 }
 
 fn sdObstacle(obs: Obstacle, p: vec2<f32>) -> f32 {

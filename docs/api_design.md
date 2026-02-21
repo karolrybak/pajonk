@@ -6,10 +6,13 @@
 - `f32[0,1]: pos`, `f32[2,3]: prevPos`, `f32[4]: mass`, `f32[5]: friction`, `f32[6]: radius`, `u32[7]: collisionMask`.
 
 ### Zarządzanie Więzami (ConstraintData Layout: 32 bytes / 8 floats):
-- `u32[0]: indexA`, `i32[1]: indexB` (Jeśli < 0 -> World Anchor).
-- `f32[2]: length`, `f32[3]: compliance`.
-- `f32[4,5]: worldAnchorPos`.
-- `u32[6]: type`, `u32[7]: padding`.
+- `u32[0]: indexA`
+- `i32[1]: indexB` (Jeśli < 0 -> World Anchor, używa extra0/extra1).
+- `i32[2]: indexC` (Dla więzów 3-punktowych).
+- `u32[3]: cType` (0=Distance, 1=Angular, 2=Area, 3=Anchor, 4=InequalityCollision).
+- `f32[4]: restValue` (Dawniej length. Używane jako Length, Angle lub Area).
+- `f32[5]: compliance` (Sztywność).
+- `f32[6,7]: extra0, extra1` (Współrzędne dla World Anchor).
 
 ### Statyczne Przeszkody (ObstacleData Layout: 64 bytes / 16 floats):
 - `f32[0,1]: pos`, `f32[2]: rotation`, `u32[3]: shapeType` (Circle=0, Box=1, RoundedBox=2, etc.).
@@ -39,7 +42,12 @@
 - `index: number` (Link do GPU).
 
 ### PhysicsConstraint
-- `targetA: Entity`, `targetB: Entity | Vector2`, `length: number`, `stiffness: number`.
+- `type: number` (0: Distance, 1: Angular, 2: Area, 3: Anchor, 4: Inequality)
+- `targetA: string`
+- `targetB: string | Vector2`
+- `targetC?: string`
+- `restValue: number` (Cel dla solvery: dystans, kąt, pole)
+- `stiffness: number`
 
 ### PhysicsRope
 - `headAnchor: { target: Entity | Vector2, offset: Vector2 }`.

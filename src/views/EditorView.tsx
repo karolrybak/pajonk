@@ -21,8 +21,15 @@ export const EditorView: React.FC<{ initialLevelName: string }> = ({ initialLeve
             </div>
             <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
                 <div style={{ width: 250, background: '#1a1a1a', borderRight: '1px solid #333', padding: 15, zIndex: 10 }}>
-                    <div style={{ fontSize: 11, color: '#888', marginBottom: 10 }}>CONTROLS</div>
-                    <div style={{ fontSize: 12, color: '#ccc' }}>Click on canvas to spawn dynamic objects.</div>
+                    <div style={{ fontSize: 11, color: '#888', marginBottom: 10 }}>SPAWN RIGS</div>
+                    <div style={{ fontSize: 12, color: '#ccc', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                        <div><b>[1]</b> Dumbbell (Dist)</div>
+                        <div><b>[2]</b> Arm/Hinge (Angle)</div>
+                        <div><b>[3]</b> Soft Body (Area)</div>
+                        <div><b>[4]</b> Repulsion (Inequality)</div>
+                        <hr style={{ border: 'none', borderTop: '1px solid #333', margin: '10px 0' }}/>
+                        <div><b>[↑ / ↓]</b> Modify RestValue (Actuator)</div>
+                    </div>
                 </div>
                 <div ref={canvasRef} style={{ flex: 1, background: '#000', position: 'relative' }} />
             </div>

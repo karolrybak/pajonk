@@ -11,6 +11,9 @@ export type Entity = {
         rotation: number;
         scale: THREE.Vector2;
     };
+    
+    velocity?: THREE.Vector2;
+    force?: THREE.Vector2;
 
     physicsBody?: {
         isStatic: boolean;
@@ -30,9 +33,11 @@ export type Entity = {
     };
 
     physicsConstraint?: {
+        type: number;
         targetA: string;
         targetB: string | THREE.Vector2;
-        length: number;
+        targetC?: string;
+        restValue: number;
         stiffness: number;
         index: number;
     };
