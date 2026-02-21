@@ -6,7 +6,8 @@ export const MATERIALS = {
     WOOD: 3,
     METAL: 4,
     RUBBER: 5,
-    ROPE: 6
+    ROPE: 6,
+    WORLD_BORDER: 7
 };
 
 export const MATERIAL_COLORS = {
@@ -15,5 +16,6 @@ export const MATERIAL_COLORS = {
     3: 0x8b4513, // Wood
     4: 0x708090, // Metal
     5: 0x800080, // Rubber
-    6: 0xffffff  // Rope (White)
+    6: 0xffffff, // Rope
+    7: 0x2a2a30  // World Border (Dark Gray-Blue)
 };

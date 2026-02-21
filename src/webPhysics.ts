@@ -1,4 +1,4 @@
-export const MAX_PARTICLES = 8192;
+export const MAX_PARTICLES = 2048;
 export const MAX_CONSTRAINTS = 16384;
 export const MAX_OBSTACLES = 1024;
 export const MAX_EVENTS = 4096;
@@ -10,6 +10,7 @@ export interface SimulationParams {
     worldBounds: Float32Array;
     collisionIterations: number;
     isPaused: boolean;
+    phase?: number;
 }
 
 export class WebPhysics {
@@ -27,17 +28,19 @@ export class WebPhysics {
     public particleBuffer!: GPUBuffer;
     public constraintBuffer!: GPUBuffer;
     public obstacleBuffer!: GPUBuffer;
-    private paramsBuffer!: GPUBuffer;
-    private eventBuffer!: GPUBuffer;
-    private eventCountBuffer!: GPUBuffer;
     private stagingBuffer!: GPUBuffer;
-    private bindGroup!: GPUBindGroup;
+
+    private paramsBuffers: GPUBuffer[] = [];
+    private bindGroups: GPUBindGroup[] = [];
     private pipelines: Record<string, GPUComputePipeline> = {};
     private isReadingBack = false;
     public queuedSync = false;
     public numObstacles = 0;
-    public maxParticleIndex = 0;
+    public maxColor = 0;
     private dirtyParticles = new Set<number>();
+
+    private particleColors = Array.from({ length: MAX_PARTICLES }, () => new Set<number>());
+    private colorCounts = new Int32Array(16);
 
     constructor(device: GPUDevice) {
         this.device = device;
@@ -50,9 +53,6 @@ export class WebPhysics {
         this.particleBuffer = this.device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
         this.constraintBuffer = this.device.createBuffer({ size: this.constraints.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
         this.obstacleBuffer = this.device.createBuffer({ size: this.obstacles.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
-        this.paramsBuffer = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        this.eventBuffer = this.device.createBuffer({ size: MAX_EVENTS * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-        this.eventCountBuffer = this.device.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
         this.stagingBuffer = this.device.createBuffer({ size: this.particles.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
 
         const bgl = this.device.createBindGroupLayout({
@@ -60,33 +60,57 @@ export class WebPhysics {
                 { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
                 { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
                 { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-                { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }
+                { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } }
             ]
         });
 
-        this.bindGroup = this.device.createBindGroup({
-            layout: bgl,
-            entries: [
-                { binding: 0, resource: { buffer: this.particleBuffer } },
-                { binding: 1, resource: { buffer: this.constraintBuffer } },
-                { binding: 2, resource: { buffer: this.obstacleBuffer } },
-                { binding: 3, resource: { buffer: this.paramsBuffer } },
-                { binding: 4, resource: { buffer: this.eventBuffer } },
-                { binding: 5, resource: { buffer: this.eventCountBuffer } }
-            ]
-        });
+        for (let i = 0; i < 16; i++) {
+            const pBuf = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            this.paramsBuffers.push(pBuf);
+            this.bindGroups.push(this.device.createBindGroup({
+                layout: bgl,
+                entries: [
+                    { binding: 0, resource: { buffer: this.particleBuffer } },
+                    { binding: 1, resource: { buffer: this.constraintBuffer } },
+                    { binding: 2, resource: { buffer: this.obstacleBuffer } },
+                    { binding: 3, resource: { buffer: pBuf } }
+                ]
+            }));
+        }
 
         const layout = this.device.createPipelineLayout({ bindGroupLayouts: [bgl] });
         const createPipe = (entry: string) => this.device.createComputePipeline({ layout, compute: { module: shaderModule, entryPoint: entry } });
 
-        this.pipelines['integrate'] = createPipe('integrate');
-        this.pipelines['solveConstraints'] = createPipe('solveConstraints');
-        this.pipelines['solveCollisions'] = createPipe('solveCollisions');
-        this.pipelines['solveParticleCollisions'] = createPipe('solveParticleCollisions');
+        ['integrate', 'solveConstraints', 'solveCollisions', 'solveParticleCollisions', 'applyFriction', 'applyParticleFriction'].forEach(e => {
+            this.pipelines[e] = createPipe(e);
+        });
 
         this.ready = true;
+    }
+
+    assignColor(a: number, b: number): number {
+        if (b < 0) return 0;
+        let color = 0;
+        const setA = this.particleColors[a];
+        const setB = this.particleColors[b];
+        while ((setA && setA.has(color)) || (setB && setB.has(color))) color++;
+        if (color >= 16) color = 15;
+        setA?.add(color); setB?.add(color);
+        this.colorCounts[color]++;
+        while (this.maxColor < 15 && this.colorCounts[this.maxColor + 1] > 0) this.maxColor++;
+        return color;
+    }
+
+    removeConstraintColor(idx: number) {
+        const off = idx * 8;
+        const a = this.constraints[off]!;
+        const b = this.constraints[off + 1]!;
+        const color = this.constraints[off + 2]!;
+        if (a < 0) return;
+        this.particleColors[a]?.delete(color);
+        if (b >= 0) this.particleColors[b]?.delete(color);
+        this.colorCounts[color]--;
+        while (this.maxColor > 0 && this.colorCounts[this.maxColor] === 0) this.maxColor--;
     }
 
     allocateParticles(count: number): number[] {
@@ -96,7 +120,6 @@ export class WebPhysics {
                 this.particleAlloc[i] = 1;
                 indices.push(i);
                 this.activeParticleIndices.push(i);
-                this.maxParticleIndex = Math.max(this.maxParticleIndex, i);
             }
         }
         return indices;
@@ -107,6 +130,7 @@ export class WebPhysics {
         this.activeParticleIndices = this.activeParticleIndices.filter(i => !set.has(i));
         for (const idx of indices) {
             this.particleAlloc[idx] = 0;
+            if (this.particleColors[idx]) this.particleColors[idx].clear();
             this.particles.fill(0, idx * 8, idx * 8 + 8);
             this.dirtyParticles.add(idx);
         }
@@ -123,23 +147,24 @@ export class WebPhysics {
 
     releaseConstraints(indices: number[]) {
         for (const idx of indices) {
+            this.removeConstraintColor(idx);
             this.constraintAlloc[idx] = 0;
             this.constraints.fill(-1, idx * 8, idx * 8 + 8);
         }
         this.queuedSync = true;
     }
 
-    setConstraint(idx: number, a: number, b: number, cIdx: number, cType: number, restValue: number, comp: number, anchor: Float32Array) {
+    setConstraint(idx: number, a: number, b: number, color: number, cType: number, restValue: number, comp: number, anchor: Float32Array) {
         const off = idx * 8;
         const f32 = new Float32Array(this.constraints.buffer);
         this.constraints[off] = a;
-        this.constraints[off+1] = b;
-        this.constraints[off+2] = cIdx;
-        this.constraints[off+3] = cType;
-        f32[off+4] = restValue;
-        f32[off+5] = comp;
-        f32[off+6] = anchor[0]!;
-        f32[off+7] = anchor[1]!;
+        this.constraints[off + 1] = b;
+        this.constraints[off + 2] = color;
+        this.constraints[off + 3] = cType;
+        f32[off + 4] = restValue;
+        f32[off + 5] = comp;
+        f32[off + 6] = anchor[0]!;
+        f32[off + 7] = anchor[1]!;
         this.queuedSync = true;
     }
 
@@ -151,6 +176,21 @@ export class WebPhysics {
         const meta = (mask & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16);
         new Uint32Array(this.particles.buffer)[off+7] = meta;
         this.dirtyParticles.add(idx);
+        this.queuedSync = true;
+    }
+
+    setObstacle(idx: number, pos: Float32Array, rotation: number, shapeType: number, params: Float32Array, friction: number, appearance: number = 0, flags: number = 0) {
+        const off = idx * 8;
+        const u32 = new Uint32Array(this.obstacles.buffer);
+        this.obstacles[off] = pos[0]!; 
+        this.obstacles[off+1] = pos[1]!;
+        this.obstacles[off+2] = rotation; 
+        const f8 = Math.max(0, Math.min(255, Math.floor(friction * 255)));
+        u32[off+3] = (shapeType & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16) | (f8 << 24);
+        this.obstacles[off+4] = params[0]!; 
+        this.obstacles[off+5] = params[1]!; 
+        this.obstacles[off+6] = params[2]!;
+        this.obstacles[off+7] = params[3]!;
         this.queuedSync = true;
     }
 
@@ -206,8 +246,8 @@ export class WebPhysics {
             if (shapeType === 0) {
                 d = Math.sqrt(lpx*lpx + lpy*lpy) - p[0]!;
             } else if (shapeType === 1) {
-                const qx = Math.abs(lpx) - p[0]!;
-                const qy = Math.abs(lpy) - p[1]!;
+                const qx = Math.abs(lpx) - (p[0]! * 0.5);
+                const qy = Math.abs(lpy) - (p[1]! * 0.5);
                 d = Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
             }
 
@@ -216,21 +256,6 @@ export class WebPhysics {
             }
         }
         return null;
-    }
-
-    setObstacle(idx: number, pos: Float32Array, rotation: number, shapeType: number, params: Float32Array, friction: number, appearance: number = 0, flags: number = 0) {
-        const off = idx * 8;
-        const u32 = new Uint32Array(this.obstacles.buffer);
-        this.obstacles[off] = pos[0]!; 
-        this.obstacles[off+1] = pos[1]!;
-        this.obstacles[off+2] = rotation; 
-        const f8 = Math.max(0, Math.min(255, Math.floor(friction * 255)));
-        u32[off+3] = (shapeType & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16) | (f8 << 24);
-        this.obstacles[off+4] = params[0]!; 
-        this.obstacles[off+5] = params[1]!; 
-        this.obstacles[off+6] = params[2]!;
-        this.obstacles[off+7] = params[3]!;
-        this.queuedSync = true;
     }
 
     step(params: SimulationParams) {
@@ -244,48 +269,39 @@ export class WebPhysics {
             this.dirtyParticles.clear();
         }
 
-        const paramData = new Float32Array(16);
-        const u32 = new Uint32Array(paramData.buffer);
-        paramData[0] = params.dt; u32[1] = params.substeps;
-        paramData[2] = params.gravity[0]!; paramData[3] = params.gravity[1]!;
-        paramData[4] = params.worldBounds[0]!; paramData[5] = params.worldBounds[1]!;
-        paramData[6] = params.worldBounds[2]!; paramData[7] = params.worldBounds[3]!;
-        u32[8] = params.collisionIterations;
-        u32[9] = this.numObstacles;
-        u32[10] = params.isPaused ? 1 : 0;
-        this.device.queue.writeBuffer(this.paramsBuffer, 0, paramData);
+        const writeParams = (ph: number) => {
+            const data = new Float32Array(16);
+            const u32 = new Uint32Array(data.buffer);
+            data[0] = params.dt; u32[1] = params.substeps;
+            data[2] = params.gravity[0]!; data[3] = params.gravity[1]!;
+            data[4] = params.worldBounds[0]!; data[5] = params.worldBounds[1]!;
+            data[6] = params.worldBounds[2]!; data[7] = params.worldBounds[3]!;
+            u32[8] = params.collisionIterations;
+            u32[9] = this.numObstacles;
+            u32[10] = params.isPaused ? 1 : 0;
+            u32[11] = ph;
+            this.device.queue.writeBuffer(this.paramsBuffers[ph]!, 0, data);
+        };
 
         const enc = this.device.createCommandEncoder();
-        const pInt = enc.beginComputePass(); 
-        pInt.setBindGroup(0, this.bindGroup); 
-        const p1 = this.pipelines['integrate'];
-        if (p1) pInt.setPipeline(p1); 
-        pInt.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
-        pInt.end();
+        writeParams(0);
+        const pInt = enc.beginComputePass(); pInt.setBindGroup(0, this.bindGroups[0]!); pInt.setPipeline(this.pipelines['integrate']!); pInt.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pInt.end();
 
-        for (let i = 0; i < params.substeps; i++) {
-            const pConstr = enc.beginComputePass(); 
-            pConstr.setBindGroup(0, this.bindGroup); 
-            const p2 = this.pipelines['solveConstraints'];
-            if (p2) pConstr.setPipeline(p2); 
-            pConstr.dispatchWorkgroups(Math.ceil(MAX_CONSTRAINTS / 64)); 
-            pConstr.end();
-            
-            for (let c = 0; c < params.collisionIterations; c++) {
-                const pColl = enc.beginComputePass(); 
-                pColl.setBindGroup(0, this.bindGroup); 
-                const p3 = this.pipelines['solveCollisions'];
-                if (p3) pColl.setPipeline(p3); 
-                pColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
-                pColl.end();
-
-                const pPColl = enc.beginComputePass(); 
-                pPColl.setBindGroup(0, this.bindGroup); 
-                const p4 = this.pipelines['solveParticleCollisions'];
-                if (p4) pPColl.setPipeline(p4); 
-                pPColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
-                pPColl.end();
+        for (let s = 0; s < params.substeps; s++) {
+            for (let ph = 0; ph <= this.maxColor; ph++) {
+                writeParams(ph);
+                const pConstr = enc.beginComputePass(); 
+                pConstr.setBindGroup(0, this.bindGroups[ph]!); 
+                pConstr.setPipeline(this.pipelines['solveConstraints']!); 
+                pConstr.dispatchWorkgroups(Math.ceil(MAX_CONSTRAINTS / 64)); 
+                pConstr.end();
             }
+            
+            const pColl = enc.beginComputePass(); pColl.setBindGroup(0, this.bindGroups[0]!); pColl.setPipeline(this.pipelines['solveCollisions']!); pColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pColl.end();
+            const pPColl = enc.beginComputePass(); pPColl.setBindGroup(0, this.bindGroups[0]!); pPColl.setPipeline(this.pipelines['solveParticleCollisions']!); pPColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pPColl.end();
+
+            const pFric = enc.beginComputePass(); pFric.setBindGroup(0, this.bindGroups[0]!); pFric.setPipeline(this.pipelines['applyFriction']!); pFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pFric.end();
+            const pPFric = enc.beginComputePass(); pPFric.setBindGroup(0, this.bindGroups[0]!); pPFric.setPipeline(this.pipelines['applyParticleFriction']!); pPFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pPFric.end();
         }
 
         enc.copyBufferToBuffer(this.particleBuffer, 0, this.stagingBuffer, 0, this.particles.byteLength);
@@ -293,8 +309,7 @@ export class WebPhysics {
 
         this.isReadingBack = true;
         this.stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-            const mapped = this.stagingBuffer.getMappedRange();
-            const data = new Float32Array(mapped);
+            const data = new Float32Array(this.stagingBuffer.getMappedRange());
             for (const i of this.activeParticleIndices) {
                 if (!this.dirtyParticles.has(i)) {
                     const off = i * 8;

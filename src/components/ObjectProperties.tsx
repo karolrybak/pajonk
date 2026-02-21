@@ -9,6 +9,7 @@ interface ObjectPropertiesProps {
 
 export const ObjectProperties: React.FC<ObjectPropertiesProps> = ({ selectedEntity, setSelectedEntity, onDelete }) => {
     const update = () => setSelectedEntity({ ...selectedEntity });
+    const body = selectedEntity.physicsBody || selectedEntity.staticBody;
 
     return (
         <div style={{ flex: 1, padding: 12, fontSize: 12, overflowY: 'auto', borderTop: '1px solid #333' }}>
@@ -33,15 +34,17 @@ export const ObjectProperties: React.FC<ObjectPropertiesProps> = ({ selectedEnti
                     </div>
                 )}
 
-                {selectedEntity.physicsBody && (
+                {body && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '8px', background: '#222', borderRadius: 4 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span>Mass</span>
-                            <input type="number" min="0.1" step="0.1" value={selectedEntity.physicsBody.mass} onChange={e => { selectedEntity.physicsBody!.mass = Number(e.target.value); update(); }} style={{ width: 60, background: '#111', color: '#fff' }}/>
-                        </div>
+                        {selectedEntity.physicsBody && (
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span>Mass</span>
+                                <input type="number" min="0.1" step="0.1" value={selectedEntity.physicsBody.mass} onChange={e => { selectedEntity.physicsBody!.mass = Number(e.target.value); update(); }} style={{ width: 60, background: '#111', color: '#fff' }}/>
+                            </div>
+                        )}
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                             <span>Friction</span>
-                            <input type="number" min="0" max="1" step="0.05" value={selectedEntity.physicsBody.friction} onChange={e => { selectedEntity.physicsBody!.friction = Number(e.target.value); update(); }} style={{ width: 60, background: '#111', color: '#fff' }}/>
+                            <input type="number" min="0" max="1" step="0.05" value={body.friction} onChange={e => { body.friction = Number(e.target.value); update(); }} style={{ width: 60, background: '#111', color: '#fff' }}/>
                         </div>
                     </div>
                 )}

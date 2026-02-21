@@ -14,11 +14,16 @@ export type Entity = {
     force?: Float32Array;
 
     physicsBody?: {
-        isStatic: boolean;
         mass: number;
         friction: number;
         collisionMask: number;
         groupId: number;
+        appearance: number;
+        flags: number;
+    };
+
+    staticBody?: {
+        friction: number;
         appearance: number;
         flags: number;
     };
@@ -41,6 +46,7 @@ export type Entity = {
         restValue: number;
         stiffness: number;
         index: number;
+        color?: number;
     };
 
     physicsRope?: {
@@ -49,6 +55,10 @@ export type Entity = {
         segments: Entity[];
         segmentLength: number;
         compliance: number;
+    };
+
+    editor_ui?: {
+        visible: boolean;
     };
 };
 

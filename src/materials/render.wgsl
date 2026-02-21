@@ -84,7 +84,7 @@ fn vs(@builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceId
 @vertex
 fn vs_lines(@builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceIdx: u32) -> @builtin(position) vec4<f32> {
     let c = constraints[instanceIdx];
-    if (c.idxA < 0) { return vec4<f32>(0.0); }
+    if (c.idxA < 0) { return vec4<f32>(-100.0, -100.0, -100.0, 1.0); }
     
     let pA = particles[u32(c.idxA)].pos;
     var pB: vec2<f32>;
@@ -127,9 +127,13 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
         if (shape == 0u) {
             d = length(in.uv * (obs.params.x + 0.1)) - obs.params.x;
             radius_val = obs.params.x;
-        } else {
+        } else if (shape == 1u) {
             let q = abs(in.uv * (obs.params.xy + 0.1)) - obs.params.xy * 0.5;
             d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+            radius_val = min(obs.params.x, obs.params.y);
+        } else if (shape == 2u) {
+            let q = abs(in.uv * (obs.params.xy + 0.1)) - obs.params.xy * 0.5;
+            d = -(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
             radius_val = min(obs.params.x, obs.params.y);
         }
     } else {
@@ -146,15 +150,23 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     if (appearance == 1u) { color = vec3<f32>(0.2, 0.2, 0.2); }
     else if (appearance == 2u) { color = vec3<f32>(0.0, 1.0, 0.5); }
     else if (appearance == 3u) { color = vec3<f32>(0.5, 0.3, 0.1); }
-    else if (appearance == 6u) { return vec4<f32>(0.0); } // Hide rope nodes
+    else if (appearance == 7u) { color = vec3<f32>(0.2, 0.25, 0.3); }
+    else if (appearance == 6u) { 
+        color = vec3<f32>(1.0, 1.0, 1.0);
+        alpha = smoothstep(0.01, -0.01, d) * 0.4; 
+    }
     
-    alpha = smoothstep(0.01, -0.01, d);
+    if (appearance != 6u) {
+        alpha = smoothstep(0.01, -0.01, d);
+    }
+
     if ((flags & 1u) != 0u) {
         let thickness = 0.02;
         let border = smoothstep(thickness, 0.0, abs(d + thickness * 0.5));
         color = mix(color, vec3<f32>(1.0, 1.0, 0.0), border);
         alpha = max(alpha, border);
     }
+
     return vec4<f32>(color, alpha);
 }
 

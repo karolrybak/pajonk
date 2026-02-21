@@ -9,36 +9,28 @@ export const RopeSystem = {
             const rope = ropeEnt.physicsRope;
             if (rope.segments.length < 1) continue;
 
-            const lastEnt = rope.segments[rope.segments.length - 1];
-            if (!lastEnt || !lastEnt.transform) continue;
+            const lastEnt = rope.segments[rope.segments.length - 1]!;
+            if (!lastEnt.transform) continue;
 
             if (ropeEnt.tags.includes('building')) {
                 lastEnt.transform.position.set(mouseWorld);
-                // Auto-reeling handled here if mode is auto
-                const engine = (window as any).engine; // Hack for mode check or move to engine
-            }
-
-            const headEnt = rope.segments[0];
-            if (headEnt && headEnt.transform) {
-                if (!(rope.headAnchor.target instanceof Float32Array)) {
-                    const targetEnt = rope.headAnchor.target;
-                    if (targetEnt && targetEnt.transform) {
-                        vec2.add(targetEnt.transform.position, rope.headAnchor.offset, headEnt.transform.position);
-                    }
-                } else {
-                    vec2.add(rope.headAnchor.target, rope.headAnchor.offset, headEnt.transform.position);
+                if (lastEnt.physicsParticle) {
+                    // Force GPU position to follow mouse exactly to prevent 'slipping'
+                    const b = lastEnt.physicsBody!;
+                    physics.setParticle(lastEnt.physicsParticle.index, mouseWorld, mouseWorld, b.mass, b.friction, 0.05, b.collisionMask, b.appearance, b.flags);
                 }
-            }
+                
+                const engine = (window as any).engine;
+                const isAuto = engine ? engine.ropeMode === 'auto' : true;
 
-            if (rope.segments.length > 1) {
-                const prevEnt = rope.segments[rope.segments.length - 2];
-                if (prevEnt && prevEnt.transform) {
-                    const dist = vec2.distance(prevEnt.transform.position, lastEnt.transform.position);
+                if (isAuto && rope.segments.length > 1) {
+                    const prevEnt = rope.segments[rope.segments.length - 2]!;
+                    const dist = vec2.distance(prevEnt.transform!.position, mouseWorld);
+                    
                     if (dist > rope.segmentLength * 1.5 && rope.segments.length < 100) {
-                        const newPos = vec2.lerp(prevEnt.transform.position, lastEnt.transform.position, 0.5);
+                        const newPos = vec2.lerp(prevEnt.transform!.position, mouseWorld, 0.5);
                         const newSeg = addObject(physics, 'dynamic', 'circle', newPos as Float32Array, 0.05, 6);
                         newSeg.name = `rope_seg_${ropeEnt.id}`;
-                        newSeg.physicsBody!.mass = 1.0;
                         newSeg.physicsBody!.collisionMask = 0xFD;
 
                         rope.segments.splice(rope.segments.length - 1, 0, newSeg);
@@ -51,7 +43,20 @@ export const RopeSystem = {
                         RopeSystem.createLink(prevEnt, newSeg, rope.segmentLength, rope.compliance);
                         RopeSystem.createLink(newSeg, lastEnt, rope.segmentLength, rope.compliance);
                         physics.queuedSync = true;
+                        if (engine && engine.onRopeStateChange) engine.onRopeStateChange();
                     }
+                }
+            }
+
+            const headEnt = rope.segments[0]!;
+            if (headEnt && headEnt.transform) {
+                if (!(rope.headAnchor.target instanceof Float32Array)) {
+                    const targetEnt = rope.headAnchor.target;
+                    if (targetEnt && targetEnt.transform) {
+                        vec2.add(targetEnt.transform.position, rope.headAnchor.offset, headEnt.transform.position);
+                    }
+                } else {
+                    vec2.add(rope.headAnchor.target, rope.headAnchor.offset, headEnt.transform.position);
                 }
             }
         }

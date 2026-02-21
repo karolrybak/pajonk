@@ -4,7 +4,7 @@ import { getMouseWorld } from '../utils';
 import { BOUNDS } from '../constants';
 import { addObject } from './EntityFactory';
 import { world, type Entity } from '../ecs';
-import type { ToolMode, PlacementState } from '../types';
+import { type ToolMode, type PlacementState } from '../types';
 import { RopeSystem } from './RopeSystem';
 
 export class EditorEngine extends AppEngine {
@@ -17,6 +17,7 @@ export class EditorEngine extends AppEngine {
     ropeMode: 'auto' | 'manual' = 'auto';
     activeRope: Entity | null = null;
     onSelectEntity?: (ent: Entity | null) => void;
+    onRopeStateChange?: () => void;
 
     constructor(container: HTMLElement) {
         super(container);
@@ -33,11 +34,9 @@ export class EditorEngine extends AppEngine {
              if (this.tool === 'build_line' || this.activeRope) e.preventDefault();
              if (this.activeRope) this.cancelRope();
         });
-
-        addObject(this.physics, 'static', 'box', new Float32Array([0, -6]));
     }
 
-    private cancelRope() {
+    cancelRope() {
         if (!this.activeRope) return;
         const rope = this.activeRope.physicsRope!;
         for (const seg of rope.segments) world.remove(seg);
@@ -45,51 +44,63 @@ export class EditorEngine extends AppEngine {
         const constraints = world.entities.filter(e => 
             e.physicsConstraint && 
             (rope.segments.includes(e.physicsConstraint.targetA) || 
-             (typeof e.physicsConstraint.targetB !== 'string' && !(e.physicsConstraint.targetB instanceof Float32Array) && rope.segments.includes(e.physicsConstraint.targetB as any)))
+             (!(e.physicsConstraint.targetB instanceof Float32Array) && rope.segments.includes(e.physicsConstraint.targetB as any)))
         );
         for (const c of constraints) world.remove(c);
         
         world.remove(this.activeRope);
         this.activeRope = null;
+        this.onRopeStateChange?.();
     }
 
     private onMouseDown(e: MouseEvent) {
         if (e.target !== this.canvas) return;
         const pos = getMouseWorld(e, this.canvas, BOUNDS);
         
-        if (e.button === 1) { // MMB
+        if (e.button === 1) {
+             e.preventDefault();
              this.ropeMode = this.ropeMode === 'auto' ? 'manual' : 'auto';
+             this.onRopeStateChange?.();
              return;
         }
 
         if (this.tool === 'build_line') {
             if (e.button === 2) return;
             
+            const anchor = this.physics.findAnchor(pos);
+            const pinPos = anchor ? anchor.pos : pos.slice();
+
             if (!this.activeRope) {
-                const anchor = this.physics.findAnchor(pos);
-                const startPos = anchor ? anchor.pos : pos.slice();
+                const seg0 = addObject(this.physics, 'dynamic', 'circle', pinPos, 0.05, 6);
+                const seg1 = addObject(this.physics, 'dynamic', 'circle', pinPos.slice(), 0.05, 6);
                 
-                const seg0 = addObject(this.physics, 'dynamic', 'circle', startPos, 0.05, 6);
-                const seg1 = addObject(this.physics, 'dynamic', 'circle', startPos.slice(), 0.05, 6);
-                
-                // If pinned to static, give it infinite mass (0) to stay fixed
                 if (anchor?.type === 'static') seg0.physicsBody!.mass = 0;
 
                 this.activeRope = world.add({
                     id: Math.random().toString(36).substr(2, 9), name: 'rope', tags: ['rope', 'building'],
+                    editor_ui: { visible: true },
                     physicsRope: {
-                        headAnchor: { target: anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : startPos, offset: new Float32Array([0,0]) },
+                        headAnchor: { target: anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : pinPos, offset: new Float32Array([0,0]) },
                         tailAnchor: { target: seg1, offset: new Float32Array([0,0]) },
                         segments: [seg0, seg1], segmentLength: 0.1, compliance: 0.0001,
                     }
                 });
 
-                const targetB = anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : startPos;
+                const targetB = anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : pinPos;
                 RopeSystem.createLink(seg0, targetB, 0.05, 0);
                 RopeSystem.createLink(seg0, seg1, 0.1, 0.0001);
+                this.onRopeStateChange?.();
             } else {
+                const lastSeg = this.activeRope.physicsRope!.segments[this.activeRope.physicsRope!.segments.length - 1]!;
+                if (anchor) {
+                    lastSeg.transform!.position.set(anchor.pos);
+                    const targetB = anchor.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : anchor.pos;
+                    RopeSystem.createLink(lastSeg, targetB, 0.05, 0);
+                    if (anchor.type === 'static') lastSeg.physicsBody!.mass = 0;
+                }
                 this.activeRope.tags = this.activeRope.tags.filter(t => t !== 'building');
                 this.activeRope = null;
+                this.onRopeStateChange?.();
             }
             return;
         }
@@ -115,9 +126,14 @@ export class EditorEngine extends AppEngine {
         (this as any).mouseWorld = pos;
         
         if (this.renderer) {
-            const anchor = this.physics.findAnchor(pos);
-            const color = anchor ? (anchor.type === 'static' ? new Float32Array([0.2, 0.4, 1.0, 0.8]) : new Float32Array([0.2, 1.0, 0.4, 0.8])) : new Float32Array([0.8, 0.8, 0.8, 0.5]);
-            this.renderer.updateGizmo(pos, color);
+            if (this.tool === 'build_line') {
+                const anchor = this.physics.findAnchor(pos);
+                const color = anchor ? (anchor.type === 'static' ? new Float32Array([0.2, 0.4, 1.0, 0.8]) : new Float32Array([0.2, 1.0, 0.4, 0.8])) : new Float32Array([0.8, 0.8, 0.8, 0.5]);
+                const gizmoPos = anchor ? anchor.pos : pos;
+                this.renderer.updateGizmo(gizmoPos, color);
+            } else {
+                this.renderer.updateGizmo(new Float32Array([1000, 1000]), new Float32Array([0, 0, 0, 0]));
+            }
         }
 
         if (this.draggedEntity && this.draggedEntity.transform) {
@@ -126,16 +142,21 @@ export class EditorEngine extends AppEngine {
     }
 
     private onWheel(e: WheelEvent) {
-        if (this.activeRope && this.ropeMode === 'manual') {
+        if (this.activeRope) {
+            if (this.ropeMode === 'auto') {
+                this.ropeMode = 'manual';
+                this.onRopeStateChange?.();
+            }
             e.preventDefault();
             const rope = this.activeRope.physicsRope!;
             if (e.deltaY < 0) {
-                const last = rope.segments[rope.segments.length-1];
-                if (last && last.transform) {
+                const last = rope.segments[rope.segments.length-1]!;
+                if (last.transform) {
                     const nextPos = vec2.add(last.transform.position, new Float32Array([0, 0.1])) as Float32Array;
                     const newSeg = addObject(this.physics, 'dynamic', 'circle', nextPos, 0.05, 6);
                     RopeSystem.createLink(last, newSeg, rope.segmentLength, rope.compliance);
                     rope.segments.push(newSeg);
+                    this.onRopeStateChange?.();
                 }
             } else if (rope.segments.length > 2) {
                 const removed = rope.segments.pop();
@@ -143,8 +164,14 @@ export class EditorEngine extends AppEngine {
                     world.remove(removed);
                     const c = world.entities.find(e => e.physicsConstraint && (e.physicsConstraint.targetA === removed || e.physicsConstraint.targetB === removed));
                     if (c) world.remove(c);
+                    this.onRopeStateChange?.();
                 }
             }
         }
+    }
+
+    override clearScene() {
+        super.clearScene();
+        this.lastObstacleCount = -1;
     }
 }

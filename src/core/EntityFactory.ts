@@ -12,27 +12,24 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
         transform: { position: new Float32Array(position), rotation: 0 },
         velocity: new Float32Array([0, 0]),
         force: new Float32Array([0, 0]),
-        physicsBody: { 
-            isStatic, 
-            mass: isStatic ? 0 : 1.0, 
-            friction: 0.5, 
-            collisionMask: 0xFF, 
-            groupId: 0, 
-            appearance: appearance ?? (isStatic ? 1 : 2), 
-            flags: 0 
-        },
         sdfCollider: { shapeType: shape === 'circle' ? 0 : 1, parameters: params, rotation: 0 }
     };
 
     if (isStatic) {
+        ent.staticBody = { friction: 0.5, appearance: appearance ?? 1, flags: 0 };
+        ent.editor_ui = { visible: true };
         const idx = physics.numObstacles++;
-        physics.setObstacle(idx, position, 0, ent.sdfCollider!.shapeType, ent.sdfCollider!.parameters, 0.5, ent.physicsBody!.appearance, 0);
+        physics.setObstacle(idx, position, 0, ent.sdfCollider.shapeType, params, 0.5, ent.staticBody.appearance, 0);
     } else {
+        ent.physicsBody = { mass: 1.0, friction: 0.5, collisionMask: 0xFF, groupId: 0, appearance: appearance ?? 2, flags: 0 };
+        if (appearance !== 6) {
+            ent.editor_ui = { visible: true };
+        }
         const indices = physics.allocateParticles(1);
         const idx = indices[0];
         if (idx !== undefined) {
             world.addComponent(ent, 'physicsParticle', { index: idx });
-            physics.setParticle(idx, position, position, 1.0, 0.5, params[0]!, 0xFF, ent.physicsBody!.appearance, 0);
+            physics.setParticle(idx, position, position, 1.0, 0.5, params[0]!, 0xFF, ent.physicsBody.appearance, 0);
         }
     }
 

@@ -10,10 +10,13 @@ interface ObjectListProps {
 export const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelectedEntity }) => {
     useEntities(world);
     
+    // Only display entities marked for the editor UI
+    const filteredEntities = Array.from(world.with('editor_ui'));
+
     return (
     <div style={{ flex: selectedEntity ? '0 0 250px' : '1', padding: 10, overflowY: 'auto', borderBottom: selectedEntity ? '1px solid #333' : 'none' }}>
         <div style={{ fontSize: 10, marginBottom: 10, color: '#555', letterSpacing: '1px' }}>SCENE HIERARCHY</div>
-        {world.entities.map(e => (
+        {filteredEntities.map(e => (
             <div key={e.id} onClick={() => setSelectedEntity(e)} style={{ 
                 padding: '6px 8px', 
                 fontSize: 11, 

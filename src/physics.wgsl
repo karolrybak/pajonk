@@ -1,228 +1,201 @@
+struct Particle {
+    pos: vec2<f32>,
+    prevPos: vec2<f32>,
+    mass: f32,
+    friction: f32,
+    radius: f32,
+    object_data: u32,
+};
+
+struct Constraint {
+    idxA: i32,
+    idxB: i32,
+    color: i32,
+    cType: u32,
+    restValue: f32,
+    compliance: f32,
+    extra: vec2<f32>,
+};
+
+struct Obstacle {
+    pos: vec2<f32>,
+    rotation: f32,
+    object_data: u32,
+    params: vec4<f32>,
+};
+
 struct Params {
     dt: f32,
     substeps: u32,
     gravity: vec2<f32>,
-    bounds: vec4<f32>,
-    colIters: u32,
+    worldBounds: vec4<f32>,
+    collisionIterations: u32,
     numObstacles: u32,
-    numParticles: u32,
-    pad3: u32
+    isPaused: u32,
+    phase: u32,
+};
+
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<storage, read> constraints: array<Constraint>;
+@group(0) @binding(2) var<storage, read> obstacles: array<Obstacle>;
+@group(0) @binding(3) var<uniform> params: Params;
+
+fn rotate(v: vec2<f32>, angle: f32) -> vec2<f32> {
+    let s = sin(angle); let c = cos(angle);
+    return vec2<f32>(v.x * c - v.y * s, v.x * s + v.y * c);
 }
 
-struct Particle {
-    pos: vec2<f32>,
-    prev: vec2<f32>,
-    mass: f32,
-    friction: f32,
-    radius: f32,
-    mask: u32
+fn sdBox(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let d = abs(p) - b;
+    return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
 }
 
-struct Constraint {
-    a: u32,
-    b: i32,
-    c: i32,
-    cType: u32,
-    rest: f32,
-    comp: f32,
-    ex0: f32,
-    ex1: f32
+fn getSDF(p: vec2<f32>, obs: Obstacle) -> f32 {
+    let localP = rotate(p - obs.pos, -obs.rotation);
+    let type_id = obs.object_data & 0xFFu;
+    let appearance = (obs.object_data >> 8u) & 0xFFu;
+
+    var d = 1000.0;
+    if (appearance == 7u) { return -sdBox(localP, obs.params.xy * 0.5); }
+    if (type_id == 0u) { d = length(localP) - obs.params.x; }
+    else if (type_id == 1u) { d = sdBox(localP, obs.params.xy * 0.5); }
+    return d;
 }
 
-struct Obstacle {
-    pos: vec2<f32>,
-    rot: f32,
-    shape: u32,
-    p: array<f32, 5>,
-    friction: f32,
-    pad: array<f32, 6>
+fn getInvMass(i: u32) -> f32 {
+    let p = particles[i];
+    let flags = (p.object_data >> 16u) & 0xFFu;
+    let simAlways = (flags & 2u) != 0u;
+    if (params.isPaused == 1u && !simAlways) { return 0.0; }
+    if (p.mass <= 0.0) { return 0.0; }
+    return 1.0 / p.mass;
 }
-
-@group(0) @binding(0) var<storage, read_write> P: array<Particle>;
-@group(0) @binding(1) var<storage, read> C: array<Constraint>;
-@group(0) @binding(2) var<storage, read> O: array<Obstacle>;
-@group(0) @binding(3) var<uniform> par: Params;
 
 @compute @workgroup_size(64)
 fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= 16384u) { return; }
-    
-    var p = P[i];
-    if (p.mass <= 0.0 || p.mask == 0u) { return; }
-    
-    // Integrate once per frame with full dt
-    let v = (p.pos - p.prev) * 0.99; // Damping
-    p.prev = p.pos;
-    p.pos += v + par.gravity * par.dt * par.dt;
-    P[i] = p;
+    let i = id.x; if (i >= arrayLength(&particles)) { return; }
+    let w = getInvMass(i);
+    if (w <= 0.0) {
+        particles[i].prevPos = particles[i].pos;
+        return;
+    }
+    let temp = particles[i].pos;
+    let vel = particles[i].pos - particles[i].prevPos;
+    particles[i].pos += vel + params.gravity * params.dt * params.dt;
+    particles[i].prevPos = temp;
 }
 
 @compute @workgroup_size(64)
 fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= 16384u) { return; }
+    let i = id.x; if (i >= arrayLength(&constraints)) { return; }
+    let c = constraints[i]; if (c.idxA < 0 || u32(c.color) != params.phase) { return; }
     
-    let c = C[i];
-    let p0 = P[c.a];
-    let w0 = select(0.0, 1.0/p0.mass, p0.mass > 0.0);
-    
-    var p1 = p0;
-    var w1 = 0.0;
-    if (c.cType == 3u) {
-        p1.pos = vec2<f32>(c.ex0, c.ex1);
-    } else if (c.b >= 0) {
-        p1 = P[u32(c.b)];
-        w1 = select(0.0, 1.0/p1.mass, p1.mass > 0.0);
-    }
-    
-    var p2 = p0;
+    let w1 = getInvMass(u32(c.idxA));
     var w2 = 0.0;
-    if (c.c >= 0) {
-        p2 = P[u32(c.c)];
-        w2 = select(0.0, 1.0/p2.mass, p2.mass > 0.0);
-    }
-
-    let sdt = par.dt / f32(par.substeps);
-    let alpha = c.comp / (sdt * sdt);
-
-    if (c.cType == 0u || c.cType == 3u || c.cType == 4u) {
-        let wSum = w0 + w1;
-        if (wSum == 0.0) { return; }
-        let dir = p0.pos - p1.pos;
-        let dist = length(dir);
-        if (dist == 0.0) { return; }
-        if (c.cType == 4u && dist >= c.rest) { return; }
-        
-        let n = dir / dist;
-        let err = dist - c.rest;
-        let lambda = -err / (wSum + alpha);
-        
-        if (w0 > 0.0) { P[c.a].pos += n * (lambda * w0); }
-        if (c.b >= 0 && w1 > 0.0) { P[u32(c.b)].pos -= n * (lambda * w1); }
-    } else if (c.cType == 1u) {
-        let v0 = p0.pos - p1.pos;
-        let v2 = p2.pos - p1.pos;
-        let l0_sq = dot(v0, v0);
-        let l2_sq = dot(v2, v2);
-        if (l0_sq < 0.0001 || l2_sq < 0.0001) { return; }
-        
-        let current_angle = atan2(v0.x * v2.y - v0.y * v2.x, dot(v0, v2));
-        var err = current_angle - c.rest;
-        while(err > 3.14159) { err -= 6.28318; }
-        while(err < -3.14159) { err += 6.28318; }
-        
-        let g0 = vec2<f32>(-v0.y / l0_sq, v0.x / l0_sq);
-        let g2 = vec2<f32>(v2.y / l2_sq, -v2.x / l2_sq);
-        let g1 = -(g0 + g2);
-        
-        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
-        if (sum_w_grad2 < 0.00001) { return; }
-        
-        let lambda = -err / (sum_w_grad2 + alpha);
-        if (w0 > 0.0) { P[c.a].pos += g0 * (lambda * w0); }
-        if (w1 > 0.0) { P[u32(c.b)].pos += g1 * (lambda * w1); }
-        if (w2 > 0.0) { P[u32(c.c)].pos += g2 * (lambda * w2); }
-    } else if (c.cType == 2u) {
-        let g0 = vec2<f32>(p1.pos.y - p2.pos.y, p2.pos.x - p1.pos.x) * 0.5;
-        let g1 = vec2<f32>(p2.pos.y - p0.pos.y, p0.pos.x - p2.pos.x) * 0.5;
-        let g2 = vec2<f32>(p0.pos.y - p1.pos.y, p1.pos.x - p0.pos.x) * 0.5;
-        
-        let current_area = 0.5 * ((p1.pos.x - p0.pos.x) * (p2.pos.y - p0.pos.y) - (p1.pos.y - p0.pos.y) * (p2.pos.x - p0.pos.x));
-        let err = current_area - c.rest;
-        
-        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
-        if (sum_w_grad2 < 0.00001) { return; }
-        
-        let lambda = -err / (sum_w_grad2 + alpha);
-        if (w0 > 0.0) { P[c.a].pos += g0 * (lambda * w0); }
-        if (w1 > 0.0) { P[u32(c.b)].pos += g1 * (lambda * w1); }
-        if (w2 > 0.0) { P[u32(c.c)].pos += g2 * (lambda * w2); }
-    }
-}
-
-fn sdObstacle(obs: Obstacle, p: vec2<f32>) -> f32 {
-    let s = sin(-obs.rot);
-    let c = cos(-obs.rot);
-    let dx = p.x - obs.pos.x;
-    let dy = p.y - obs.pos.y;
-    let lp = vec2<f32>(dx * c - dy * s, dx * s + dy * c);
+    var pB: vec2<f32>;
     
-    if (obs.shape == 0u) {
-        return length(lp) - obs.p[0];
-    } else if (obs.shape == 1u) {
-        let q = abs(lp) - vec2<f32>(obs.p[0], obs.p[1]);
-        return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
+    if (c.idxB >= 0) {
+        w2 = getInvMass(u32(c.idxB));
+        pB = particles[u32(c.idxB)].pos;
+    } else {
+        pB = c.extra;
     }
-    return 1000.0;
+    
+    let wSum = w1 + w2; if (wSum <= 0.0) { return; }
+    let delta = particles[u32(c.idxA)].pos - pB;
+    let dist = length(delta); if (dist < 0.0001) { return; }
+    
+    let h = params.dt / f32(params.substeps);
+    let alpha = c.compliance / (h * h);
+    let dLambda = -(dist - c.restValue) / (wSum + alpha);
+    let corr = delta * (dLambda / dist);
+    
+    if (w1 > 0.0) { particles[u32(c.idxA)].pos += corr * w1; }
+    if (c.idxB >= 0 && w2 > 0.0) { particles[u32(c.idxB)].pos -= corr * w2; }
 }
 
 @compute @workgroup_size(64)
 fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= 16384u) { return; }
-    
-    var p = P[i];
-    if (p.mass <= 0.0 || p.mask == 0u) { return; }
-    
-    let pad = p.radius;
-    if (p.pos.x < par.bounds.x + pad) { p.pos.x = par.bounds.x + pad; }
-    if (p.pos.x > par.bounds.z - pad) { p.pos.x = par.bounds.z - pad; }
-    if (p.pos.y < par.bounds.y + pad) { p.pos.y = par.bounds.y + pad; }
-    if (p.pos.y > par.bounds.w - pad) { p.pos.y = par.bounds.w - pad; }
+    let i = id.x; if (i >= arrayLength(&particles)) { return; }
+    var p = particles[i]; let w = getInvMass(i);
+    if (w <= 0.0) { return; }
 
-    for (var j = 0u; j < par.numObstacles; j++) {
-        let obs = O[j];
-        if (obs.shape > 10u) { continue; }
-        
-        let d = sdObstacle(obs, p.pos);
+    for (var j: u32 = 0u; j < params.numObstacles; j++) {
+        let obs = obstacles[j];
+        let d = getSDF(p.pos, obs);
         if (d < p.radius) {
-            let eps = 0.01;
-            let dx = sdObstacle(obs, p.pos + vec2<f32>(eps, 0.0)) - sdObstacle(obs, p.pos - vec2<f32>(eps, 0.0));
-            let dy = sdObstacle(obs, p.pos + vec2<f32>(0.0, eps)) - sdObstacle(obs, p.pos - vec2<f32>(0.0, eps));
-            var n = vec2<f32>(dx, dy);
-            let l = length(n);
-            if (l > 0.0) {
-                n = n / l;
-                p.pos += n * (p.radius - d);
-                let v = p.pos - p.prev;
-                let vT = v - dot(v, n) * n;
-                p.prev += vT * max(obs.friction, p.friction);
-            }
+            let h = 0.001;
+            let n = normalize(vec2<f32>(
+                getSDF(p.pos + vec2<f32>(h, 0.0), obs) - d,
+                getSDF(p.pos + vec2<f32>(0.0, h), obs) - d
+            ));
+            p.pos += n * (p.radius - d);
         }
     }
-    P[i] = p;
+    particles[i].pos = p.pos;
 }
 
 @compute @workgroup_size(64)
 fn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
-    let i = id.x;
-    if (i >= 16384u) { return; }
-    var pA = P[i];
-    if (pA.mass <= 0.0 || pA.mask == 0u) { return; }
-    
-    // Simple O(N^2) brute force for now - reliable for low particle counts
-    for (var j = 0u; j < par.numParticles; j++) {
-        if (j == i) { continue; }
-        
-        var pB = P[j];
-        if (pB.mass <= 0.0 || pB.mask == 0u) { continue; }
-        
-        let dir = pA.pos - pB.pos;
-        let dist = length(dir);
-        let minDist = pA.radius + pB.radius;
-        
-                if (dist < minDist && dist > 0.0) {
-                    if ((pA.mask & pB.mask) != 0u) {
-                        let n = dir / dist;
-                        let err = dist - minDist;
-                        let wA = 1.0 / pA.mass;
-                        let wB = 1.0 / pB.mass;
-                        let wSum = wA + wB;
-                        let lambda = -err / wSum;
-                        pA.pos += n * (lambda * wA);
-                    }
-                }
+    let i = id.x; if (i >= arrayLength(&particles)) { return; }
+    var pi = particles[i]; let w1 = getInvMass(i);
+    if (w1 <= 0.0) { return; }
+
+    let max_iter = min(arrayLength(&particles), 256u);
+    for (var j: u32 = 0u; j < max_iter; j++) {
+        if (i == j) { continue; }
+        let pj = particles[j]; if (pj.mass <= 0.0) { continue; }
+        let delta = pi.pos - pj.pos; let dist = length(delta); let minDist = pi.radius + pj.radius;
+        if (dist < minDist && dist > 0.0001) {
+            let w2 = getInvMass(j); let wSum = w1 + w2;
+            if (wSum > 0.0) { 
+                let n = delta / dist; pi.pos += n * (minDist - dist) * (w1 / wSum);
+            }
+        }
     }
-    P[i] = pA;
+    particles[i].pos = pi.pos;
+}
+
+@compute @workgroup_size(64)
+fn applyFriction(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x; if (i >= arrayLength(&particles)) { return; }
+    var p = particles[i]; let w = getInvMass(i); if (w <= 0.0) { return; }
+    let vel = p.pos - p.prevPos; let velLen = length(vel); if (velLen < 0.0001) { return; }
+    
+    var newPrev = p.prevPos;
+    for (var j: u32 = 0u; j < params.numObstacles; j++) {
+        let obs = obstacles[j];
+        let d = getSDF(p.pos, obs);
+        if (d < p.radius + 0.005) {
+            let h = 0.001;
+            let n = normalize(vec2<f32>(getSDF(p.pos + vec2<f32>(h,0.0), obs) - d, getSDF(p.pos + vec2<f32>(0.0,h), obs) - d));
+            let vn = dot(vel, n); let vt = vel - n * vn; let vtLen = length(vt);
+            if (vtLen > 0.0001) {
+                let obsFric = f32((obs.object_data >> 24u) & 0xFFu) / 255.0;
+                newPrev = p.pos - (n * vn + vt * max(0.0, 1.0 - obsFric));
+            }
+        }
+    }
+    particles[i].prevPos = newPrev;
+}
+
+@compute @workgroup_size(64)
+fn applyParticleFriction(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x; if (i >= arrayLength(&particles)) { return; }
+    var pi = particles[i]; let w1 = getInvMass(i); if (w1 <= 0.0) { return; }
+    let velI = pi.pos - pi.prevPos; var newVel = velI;
+    
+    for (var j: u32 = 0u; j < 256u; j++) {
+        if (i == j) { continue; }
+        let pj = particles[j]; if (pj.mass <= 0.0) { continue; }
+        let delta = pi.pos - pj.pos; let dist = length(delta); let minDist = pi.radius + pj.radius;
+        if (dist < minDist + 0.005 && dist > 0.0001) {
+            let n = delta / dist; let velJ = pj.pos - pj.prevPos;
+            let relVel = newVel - velJ; let vn = dot(relVel, n); let vt = relVel - n * vn;
+            if (length(vt) > 0.0001) {
+                newVel = (n * vn + vt * max(0.0, 1.0 - (pi.friction + pj.friction) * 0.5)) + velJ;
+            }
+        }
+    }
+    particles[i].prevPos = pi.pos - newVel;
 }
