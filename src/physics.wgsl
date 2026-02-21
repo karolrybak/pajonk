@@ -5,7 +5,7 @@ struct Params {
     bounds: vec4<f32>,
     colIters: u32,
     numObstacles: u32,
-    pad2: u32,
+    numParticles: u32,
     pad3: u32
 }
 
@@ -51,8 +51,8 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = P[i];
     if (p.mass <= 0.0 || p.mask == 0u) { return; }
     
-    let v = (p.pos - p.prev) * 0.999; // Velocity damping
-    
+    // Integrate once per frame with full dt
+    let v = (p.pos - p.prev) * 0.99; // Damping
     p.prev = p.pos;
     p.pos += v + par.gravity * par.dt * par.dt;
     P[i] = p;
@@ -64,7 +64,6 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     if (i >= 16384u) { return; }
     
     let c = C[i];
-    
     let p0 = P[c.a];
     let w0 = select(0.0, 1.0/p0.mass, p0.mass > 0.0);
     
@@ -87,7 +86,6 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     let sdt = par.dt / f32(par.substeps);
     let alpha = c.comp / (sdt * sdt);
 
-    // 0: Distance, 3: Anchor, 4: Inequality
     if (c.cType == 0u || c.cType == 3u || c.cType == 4u) {
         let wSum = w0 + w1;
         if (wSum == 0.0) { return; }
@@ -102,9 +100,7 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         
         if (w0 > 0.0) { P[c.a].pos += n * (lambda * w0); }
         if (c.b >= 0 && w1 > 0.0) { P[u32(c.b)].pos -= n * (lambda * w1); }
-    }
-    // 1: Angular (a=end1, b=hinge, c=end2)
-    else if (c.cType == 1u) {
+    } else if (c.cType == 1u) {
         let v0 = p0.pos - p1.pos;
         let v2 = p2.pos - p1.pos;
         let l0_sq = dot(v0, v0);
@@ -127,9 +123,7 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         if (w0 > 0.0) { P[c.a].pos += g0 * (lambda * w0); }
         if (w1 > 0.0) { P[u32(c.b)].pos += g1 * (lambda * w1); }
         if (w2 > 0.0) { P[u32(c.c)].pos += g2 * (lambda * w2); }
-    }
-    // 2: Area (a, b, c)
-    else if (c.cType == 2u) {
+    } else if (c.cType == 2u) {
         let g0 = vec2<f32>(p1.pos.y - p2.pos.y, p2.pos.x - p1.pos.x) * 0.5;
         let g1 = vec2<f32>(p2.pos.y - p0.pos.y, p0.pos.x - p2.pos.x) * 0.5;
         let g2 = vec2<f32>(p0.pos.y - p1.pos.y, p1.pos.x - p0.pos.x) * 0.5;
@@ -198,4 +192,37 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
         }
     }
     P[i] = p;
+}
+
+@compute @workgroup_size(64)
+fn solveParticleCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
+    let i = id.x;
+    if (i >= 16384u) { return; }
+    var pA = P[i];
+    if (pA.mass <= 0.0 || pA.mask == 0u) { return; }
+    
+    // Simple O(N^2) brute force for now - reliable for low particle counts
+    for (var j = 0u; j < par.numParticles; j++) {
+        if (j == i) { continue; }
+        
+        var pB = P[j];
+        if (pB.mass <= 0.0 || pB.mask == 0u) { continue; }
+        
+        let dir = pA.pos - pB.pos;
+        let dist = length(dir);
+        let minDist = pA.radius + pB.radius;
+        
+                if (dist < minDist && dist > 0.0) {
+                    if ((pA.mask & pB.mask) != 0u) {
+                        let n = dir / dist;
+                        let err = dist - minDist;
+                        let wA = 1.0 / pA.mass;
+                        let wB = 1.0 / pB.mass;
+                        let wSum = wA + wB;
+                        let lambda = -err / wSum;
+                        pA.pos += n * (lambda * wA);
+                    }
+                }
+    }
+    P[i] = pA;
 }

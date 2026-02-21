@@ -33,9 +33,10 @@ export class Zyzio {
             physicsConstraint: {
                 targetA: this.torsoId,
                 targetB: this.headId,
-                length: 0.75,
+                restValue: 0.75,
                 stiffness: 0,
-                index: undefined as any
+                type: 0,
+                index: -1
             }
         });
         this.constraintId = cId;
@@ -53,7 +54,6 @@ export class Zyzio {
             velocity: new THREE.Vector2(),
             force: new THREE.Vector2(),
             physicsBody: { isStatic: false, mass, friction: 0.2, collisionMask: 0xFFFFFFFF, groupId: 1 },
-            sdfCollider: { shapeType: 0, parameters: [physRadius, 0, 0, 0, 0] }
         };
 
         const meshScale = isCircle ? physRadius : 0.25;

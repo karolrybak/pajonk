@@ -4,6 +4,7 @@ import { WebPhysics, type SimulationParams } from '../webPhysics';
 import { BOUNDS } from '../constants';
 import { world } from '../ecs';
 import { MAX_CONSTRAINTS } from '../webPhysics';
+import { RopeSystem } from './RopeSystem';
 
 export class AppEngine {
     canvas: HTMLElement;
@@ -16,6 +17,7 @@ export class AppEngine {
     alive = true;
     frameCount = 0;
     lastTime = performance.now();
+    accumulator = 0;
     onFpsUpdate?: (fps: number) => void;
 
     params: SimulationParams = {
@@ -23,7 +25,7 @@ export class AppEngine {
         substeps: 8,
         gravity: new THREE.Vector2(0, -9.81),
         worldBounds: new THREE.Vector4(-BOUNDS.width/2, -BOUNDS.height/2, BOUNDS.width/2, BOUNDS.height/2),
-        collisionIterations: 1
+        collisionIterations: 4
     };
 
     constructor(canvas: HTMLElement) {
@@ -41,6 +43,11 @@ export class AppEngine {
         
         this.physics = new WebPhysics(this.renderer, this.scene);
         
+        world.onEntityRemoved.subscribe((ent) => {
+            if (ent.physicsParticle) this.physics.releaseParticles([ent.physicsParticle.index]);
+            if (ent.physicsConstraint?.index !== undefined) this.physics.releaseConstraints([ent.physicsConstraint.index]);
+        });
+
         this.constraintLines = new THREE.LineSegments(
             new THREE.BufferGeometry(),
             new THREE.LineBasicMaterial({ color: 0x00ffff, depthTest: false })
@@ -72,7 +79,7 @@ export class AppEngine {
         let obsIdx = 0;
         for (const ent of world.with('physicsBody', 'transform', 'sdfCollider')) {
             if (ent.physicsBody.isStatic) {
-                this.physics.setObstacle(obsIdx++, ent.transform.position, ent.transform.rotation, ent.sdfCollider.shapeType, ent.sdfCollider.parameters, ent.physicsBody.friction);
+                this.physics.setObstacle(obsIdx++, ent.transform.position, ent.transform.rotation, ent.sdfCollider.shapeType, ent.sdfCollider.parameters, ent.physicsBody.friction, ent.physicsBody.appearance, ent.physicsBody.flags);
             }
         }
         this.physics.numObstacles = obsIdx;
@@ -84,7 +91,7 @@ export class AppEngine {
                 const [idx] = this.physics.allocateParticles(1);
                 if (idx !== undefined) {
                     world.addComponent(ent, 'physicsParticle', { index: idx });
-                    this.physics.setParticle(idx, ent.transform.position, ent.transform.position, ent.physicsBody.mass, ent.physicsBody.friction, ent.sdfCollider?.parameters[0] || 0.5, ent.physicsBody.collisionMask);
+                    this.physics.setParticle(idx, ent.transform.position, ent.transform.position, ent.physicsBody.mass, ent.physicsBody.friction, ent.sdfCollider?.parameters[0] || 0.5, ent.physicsBody.collisionMask, ent.physicsBody.appearance, ent.physicsBody.flags);
                 }
             }
             if (ent.physicsParticle) {
@@ -203,16 +210,36 @@ export class AppEngine {
         requestAnimationFrame(this.animate);
 
         const now = performance.now();
+        let frameTime = (now - this.lastTime) / 1000;
+        if (frameTime > 0.25) frameTime = 0.25;
+        this.lastTime = now;
+        this.accumulator += frameTime;
+
         this.frameCount++;
-        if (now - this.lastTime >= 1000) {
+        if (this.accumulator >= 1.0) {
             this.onFpsUpdate?.(this.frameCount);
             this.frameCount = 0;
-            this.lastTime = now;
+        }
+
+        while (this.accumulator >= this.params.dt) {
+            this.fixedUpdate();
+            this.accumulator -= this.params.dt;
         }
 
         this.onUpdate();
-        this.systems();
-        
+        this.visualSync();
         this.renderer.render(this.scene, this.camera);
+    }
+
+    protected fixedUpdate() {
+        RopeSystem.update((this as any).mouseWorld || new THREE.Vector2());
+        this.systems();
+    }
+
+    protected visualSync() {
+        for (const ent of world.with('transform', 'renderable')) {
+            ent.renderable.mesh.position.set(ent.transform.position.x, ent.transform.position.y, ent.renderable.mesh.position.z || 0);
+            ent.renderable.mesh.rotation.z = ent.transform.rotation;
+        }
     }
 }

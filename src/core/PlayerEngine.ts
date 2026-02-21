@@ -26,8 +26,6 @@ export class PlayerEngine extends AppEngine {
     }
 
     spawnPlayer() {
-        // Zespawnujmy twardą podłogę dla pewności
-        addObject(this.scene, 'static', 'box', new THREE.Vector2(0, -6));
         this.playerRig = new Zyzio(this.physics, new THREE.Vector2(0, 0));
     }
 

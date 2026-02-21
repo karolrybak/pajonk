@@ -9,9 +9,8 @@ export type Entity = {
     transform?: {
         position: THREE.Vector2;
         rotation: number;
-        scale: THREE.Vector2;
     };
-    
+
     velocity?: THREE.Vector2;
     force?: THREE.Vector2;
 
@@ -21,11 +20,14 @@ export type Entity = {
         friction: number;
         collisionMask: number;
         groupId: number;
+        appearance: number;
+        flags: number;
     };
 
     sdfCollider?: {
         shapeType: number;
-        parameters: [number, number, number, number, number];
+        parameters: [number, number, number, number];
+        rotation: number;
     };
 
     physicsParticle?: {
