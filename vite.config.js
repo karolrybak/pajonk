@@ -13,8 +13,8 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
-    baseUrl: '/pajonk'
   },
+  base: mode === 'production' ? '/pajonk/' : '/',
   assetsInclude: ['**/*.wgsl'],
   plugins: [
     apiPlugin,
