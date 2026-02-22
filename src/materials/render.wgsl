@@ -125,17 +125,22 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
         let obs = obstacles[in.instanceIdx];
         let shape = obs.object_data & 0xFFu;
         data_val = obs.object_data;
-        if (shape == 0u) {
+        if (shape == 0u) { // Circle
             d = length(in.uv * (obs.params.x + 0.1)) - obs.params.x;
             radius_val = obs.params.x;
-        } else if (shape == 1u) {
+        } else if (shape == 1u) { // Box
             let q = abs(in.uv * (obs.params.xy + 0.1)) - obs.params.xy * 0.5;
             d = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0);
             radius_val = min(obs.params.x, obs.params.y);
-        } else if (shape == 2u) {
+        } else if (shape == 2u) { // Inverse Box
             let q = abs(in.uv * (obs.params.xy + 0.1)) - obs.params.xy * 0.5;
             d = -(length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0));
             radius_val = min(obs.params.x, obs.params.y);
+        } else if (shape == 3u) { // Rounded Box
+            let r = obs.params.z;
+            let q = abs(in.uv * (obs.params.xy + 0.1)) - obs.params.xy * 0.5 + r;
+            d = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
+            radius_val = r;
         }
     } else {
         let pIdx = in.instanceIdx - 1024u;

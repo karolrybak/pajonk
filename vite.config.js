@@ -13,6 +13,7 @@ export default defineConfig({
   server: {
     port: 3000,
     open: true,
+    baseUrl: '/pajonk'
   },
   assetsInclude: ['**/*.wgsl'],
   plugins: [

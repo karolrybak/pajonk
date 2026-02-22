@@ -34,6 +34,7 @@ const items = [
     label: 'Static', icon: 'i-heroicons-square-3-stack-3d', children: [
       { label: 'Box', icon: 'i-heroicons-stop', onSelect: () => setTool('create_obj', { type: 'static', shape: 'box' }) },
       { label: 'Circle', icon: 'i-heroicons-stop-circle', onSelect: () => setTool('create_obj', { type: 'static', shape: 'circle' }) },
+      { label: 'Rounded Box', icon: 'i-heroicons-stop', onSelect: () => setTool('create_obj', { type: 'static', shape: 'rounded_box' }) },
     ]
   },
   { 

@@ -117,8 +117,10 @@ const open = ref(true);
     </template>
 
     <template #default="{ collapsed }">
-      <ObjectList
-        :selected-entity="selectedEntity" @select="selectedEntity = $event" />
+      <ObjectList      
+        :selected-entity="selectedEntity" 
+        @select="selectedEntity = $event"
+        @delete="handleDelete" />
     </template>
 
     <template #footer="{ collapsed }">

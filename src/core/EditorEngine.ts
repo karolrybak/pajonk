@@ -2,6 +2,7 @@ import { AppEngine } from './AppEngine';
 import { getMouseWorld } from '../utils';
 import { BOUNDS } from '../constants';
 import { world, type Entity } from '../ecs';
+import { createWorldBounds } from './EntityFactory';
 import type { ToolMode, PlacementState } from '../types';
 
 import { Tool, type IEditorEngine } from './tools/Tool';
@@ -41,6 +42,9 @@ export class EditorEngine extends AppEngine implements IEditorEngine {
 
     override async init() {
         await super.init();
+        if (world.entities.length === 0) {
+            createWorldBounds(this.physics);
+        }
         
         const add = (name: string, fn: any, opts?: any) => {
             const handler = fn.bind(this);

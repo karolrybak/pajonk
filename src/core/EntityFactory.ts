@@ -1,19 +1,29 @@
 import { world, type Entity } from '../ecs';
 import { WebPhysics } from '../webPhysics';
 import { markRaw } from 'vue';
+import { BOUNDS } from '../constants';
 
 export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape: string, position: Float32Array, customRadius?: number, appearance?: number): Entity => {
     const id = Math.random().toString(36).substr(2, 9);
     const isStatic = type === 'static';
     const radius = customRadius ?? 0.5;
-    const params = new Float32Array(shape === 'circle' ? [radius, 0, 0, 0] : [1.0, 0.5, 0, 0]);
+    let shapeType = 1;
+    let params = new Float32Array([1.0, 0.5, 0, 0]);
+
+    if (shape === 'circle') {
+        shapeType = 0;
+        params = new Float32Array([radius, 0, 0, 0]);
+    } else if (shape === 'rounded_box') {
+        shapeType = 3;
+        params = new Float32Array([1.0, 0.5, 0.1, 0]);
+    }
 
     const ent: Entity = {
         id, name: `${type}_${shape}_${id}`, tags: [type],
         transform: { position: new Float32Array(position), rotation: 0 },
         velocity: new Float32Array([0, 0]),
         force: new Float32Array([0, 0]),
-        sdfCollider: { shapeType: shape === 'circle' ? 0 : 1, parameters: params, rotation: 0 }
+        sdfCollider: { shapeType, parameters: params, rotation: 0 }
     };
 
     if (isStatic) {
@@ -27,6 +37,25 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
         }
     }
 
+    const rawEnt = markRaw(ent);
+    world.add(rawEnt);
+    return rawEnt;
+};
+
+export const createWorldBounds = (physics: WebPhysics): Entity => {
+    const ent: Entity = {
+        id: 'world_bounds', 
+        name: 'World Bounds', 
+        tags: ['static', 'bounds'],
+        transform: { position: new Float32Array([0, 0]), rotation: 0 },
+        staticBody: { friction: 0.1, appearance: 7, flags: 0 },
+        sdfCollider: { 
+            shapeType: 2, 
+            parameters: new Float32Array([BOUNDS.width, BOUNDS.height, 0, 0]), 
+            rotation: 0 
+        },
+        editor_ui: { visible: true }
+    };
     const rawEnt = markRaw(ent);
     world.add(rawEnt);
     return rawEnt;

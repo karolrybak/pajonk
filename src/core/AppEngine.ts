@@ -88,8 +88,7 @@ export class AppEngine {
         const currentCount = staticEntities.entities.length;
         
         if (currentCount !== this.lastObstacleCount) {
-            this.physics.setObstacle(0, new Float32Array([0, 0]), 0, 2, new Float32Array([BOUNDS.width, BOUNDS.height, 0, 0]), 0.1, 7, 0);
-            let obsIdx = 1;
+            let obsIdx = 0;
             for (const ent of staticEntities) {
                 const b = ent.staticBody!;
                 this.physics.setObstacle(obsIdx++, ent.transform!.position, ent.transform!.rotation, ent.sdfCollider!.shapeType, ent.sdfCollider!.parameters, b.friction, b.appearance, b.flags);

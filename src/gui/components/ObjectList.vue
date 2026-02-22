@@ -8,6 +8,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select', entity: Entity | null): void;
+  (e: 'delete', entity: Entity): void;
 }>();
 
 const entities = ref<Entity[]>([]);
@@ -54,5 +55,17 @@ const onSelect = (item: any) => {
   <UTree
     :items="treeItems"
     @select="onSelect"
-  />
+    class="w-full"
+  >
+    <template #item-trailing="{ item }">
+      <UButton
+        icon="i-heroicons-trash"
+        color="error"
+        variant="ghost"
+        size="xs"
+        class="opacity-0 group-hover:opacity-100 transition-opacity"
+        @click.stop="emit('delete', item._entity)"
+      />
+    </template>
+  </UTree>
 </template>

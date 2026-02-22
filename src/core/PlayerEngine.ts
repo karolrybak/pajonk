@@ -2,7 +2,7 @@ import { AppEngine } from './AppEngine';
 import { Zyzio } from './Zyzio';
 import { BOUNDS } from '../constants';
 import { world } from '../ecs';
-import { addObject } from './EntityFactory';
+import { addObject, createWorldBounds } from './EntityFactory';
 
 export class PlayerEngine extends AppEngine {
     playerRig: Zyzio | null = null;
@@ -21,9 +21,10 @@ export class PlayerEngine extends AppEngine {
         window.addEventListener('keydown', this.onKeyDown);
         window.addEventListener('keyup', this.onKeyUp);
         
-        // Provide a basic floor if the world is completely empty
+        // Provide world bounds and basic floor if empty
         if (world.entities.length === 0) {
-            addObject(this.physics, 'static', 'box', new Float32Array([0, -6]), BOUNDS.width, 1);
+            createWorldBounds(this.physics);
+            addObject(this.physics, 'static', 'box', new Float32Array([0, -6.5]), BOUNDS.width, 1);
         }
 
         this.spawnPlayer();

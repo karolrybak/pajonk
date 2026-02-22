@@ -367,14 +367,30 @@ export class WebPhysics {
             else if (shapeType === 1) {
                 const qx = Math.abs(lpx) - (p[0]! * 0.5), qy = Math.abs(lpy) - (p[1]! * 0.5);
                 d = Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
+            } else if (shapeType === 2) {
+                const qx = Math.abs(lpx) - (p[0]! * 0.5), qy = Math.abs(lpy) - (p[1]! * 0.5);
+                d = -(Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0));
+            } else if (shapeType === 3) {
+                const r = p[2]!;
+                const qx = Math.abs(lpx) - (p[0]! * 0.5) + r, qy = Math.abs(lpy) - (p[1]! * 0.5) + r;
+                d = Math.min(Math.max(qx, qy), 0.0) + Math.sqrt(Math.max(qx, 0)**2 + Math.max(qy, 0)**2) - r;
             }
 
             if (d < 0.8) {
                 const h = 0.001;
                 const getD = (lx: number, ly: number) => {
                     if (shapeType === 0) return Math.sqrt(lx*lx + ly*ly) - p[0]!;
-                    const qx = Math.abs(lx) - (p[0]! * 0.5), qy = Math.abs(ly) - (p[1]! * 0.5);
-                    return Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
+                    if (shapeType === 1) {
+                        const qx = Math.abs(lx) - (p[0]! * 0.5), qy = Math.abs(ly) - (p[1]! * 0.5);
+                        return Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
+                    }
+                    if (shapeType === 2) {
+                        const qx = Math.abs(lx) - (p[0]! * 0.5), qy = Math.abs(ly) - (p[1]! * 0.5);
+                        return -(Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0));
+                    }
+                    const r = p[2]!;
+                    const qx = Math.abs(lx) - (p[0]! * 0.5) + r, qy = Math.abs(ly) - (p[1]! * 0.5) + r;
+                    return Math.min(Math.max(qx, qy), 0.0) + Math.sqrt(Math.max(qx, 0)**2 + Math.max(qy, 0)**2) - r;
                 };
                 const localN = [ (getD(lpx+h, lpy)-d)/h, (getD(lpx, lpy+h)-d)/h ];
                 const mag = Math.sqrt(localN[0]!**2 + localN[1]!**2);

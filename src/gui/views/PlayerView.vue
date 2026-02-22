@@ -45,6 +45,7 @@ const updateStatus = () => {
 
   zyzioData.value = {
     grounded: rig.grounded,
+    groundDistance: rig.groundDistance,
     upDir: [rig.upDir[0], rig.upDir[1]],
     pos,
     speed,
@@ -125,7 +126,10 @@ onUnmounted(() => {
             <span>VELOCITY</span>
             <span class="font-bold">{{ zyzioData.speed.toFixed(1) }}u/s</span>
           </div>
-
+          <div class="flex justify-between">
+            <span>GROUND DISTANCE</span>
+            <span class="font-bold">{{ zyzioData.groundDistance.toFixed(1) }}u/s</span>
+          </div>
           <!-- Jump Cooldown Bar -->
           <div class="flex flex-col gap-1 mt-1">
             <div class="text-[8px] uppercase tracking-tighter">Neural Jump Link Status</div>

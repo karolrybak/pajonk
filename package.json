@@ -1,7 +1,7 @@
 {
   "name": "spider-web-physics",
   "private": true,
-  "version": "0.0.294",
+  "version": "0.0.297",
   "type": "module",
   "scripts": {
     "dev": "vite",

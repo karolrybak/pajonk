@@ -107,6 +107,18 @@ fn sdBoxInfo(p: vec2<f32>, b: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(dist, n.x, n.y);
 }
 
+fn sdRoundedBoxInfo(p: vec2<f32>, b: vec2<f32>, r: f32) -> vec3<f32> {
+    let q = abs(p) - b + r;
+    let dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    var n: vec2<f32>;
+    if (q.x > 0.0 || q.y > 0.0) {
+        n = normalize(max(q, vec2<f32>(0.0))) * vec2<f32>(sign(p.x), sign(p.y));
+    } else {
+        n = select(vec2<f32>(0.0, sign(p.y)), vec2<f32>(sign(p.x), 0.0), q.x > q.y);
+    }
+    return vec3<f32>(dist, n.x, n.y);
+}
+
 fn getSDFInfo(p: vec2<f32>, obs: Obstacle) -> vec3<f32> {
     let localP = rotate(p - obs.pos, -obs.rotation);
     let type_id = obs.object_data & 0xFFu;
@@ -114,16 +126,18 @@ fn getSDFInfo(p: vec2<f32>, obs: Obstacle) -> vec3<f32> {
 
     var info = vec3<f32>(1000.0, 0.0, 1.0);
 
-    if (appearance == 7u) {
-        info = sdBoxInfo(localP, obs.params.xy * 0.5);
-        info.x = -info.x; // World border is inverted box
-        info.y = -info.y; info.z = -info.z;
-    } else if (type_id == 0u) {
+    if (type_id == 0u) { // Circle
         let dist = length(localP) - obs.params.x;
         let n = select(normalize(localP), vec2<f32>(0.0, 1.0), dist < 0.0001 && length(localP) < 0.0001);
         info = vec3<f32>(dist, n.x, n.y);
-    } else if (type_id == 1u) {
+    } else if (type_id == 1u) { // Box
         info = sdBoxInfo(localP, obs.params.xy * 0.5);
+    } else if (type_id == 2u) { // Inverse Box (World Bounds)
+        info = sdBoxInfo(localP, obs.params.xy * 0.5);
+        info.x = -info.x; 
+        info.y = -info.y; info.z = -info.z;
+    } else if (type_id == 3u) { // Rounded Box
+        info = sdRoundedBoxInfo(localP, obs.params.xy * 0.5, obs.params.z);
     }
 
     let worldN = rotate(info.yz, obs.rotation);
