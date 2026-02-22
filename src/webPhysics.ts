@@ -285,6 +285,19 @@ export class WebPhysics {
         });
     }
 
+    async ping(id: number): Promise<number> {
+        return new Promise(resolve => {
+            this.pendingQueries.push({
+                type: 4,
+                origin: new Float32Array([0, 0]),
+                dirOrRadius: new Float32Array([0, 0]),
+                maxDist: 0,
+                mask: id,
+                resolve: (res: QueryResult) => resolve(res.hitIdx)
+            });
+        });
+    }
+
     async findAnchor(pos: Float32Array, ignoreIndices: number[] = []): Promise<{ pos: Float32Array; type: 'static' | 'particle'; targetIdx?: number; radius?: number } | null> {
         const res = await this.queryRadius(pos, 0.6, 0xFF);
         let nearestP = -1;

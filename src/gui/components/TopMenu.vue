@@ -3,6 +3,7 @@ import { listLevels, saveLevel } from '@/core/LevelSystem';
 import type { EditorEngine } from '@/core/EditorEngine';
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
+import { LatencyBenchmark } from '@/core/Benchmark';
 
 const props = defineProps<{
   engine: EditorEngine | null;
@@ -37,6 +38,14 @@ const loadLevels = async () => {
   }));
 };
 
+const runBenchmark = async () => {
+    if (!props.engine?.physics) return;
+    console.log("benchmark starting...");
+    const results = await LatencyBenchmark.run(props.engine.physics, 100);
+    console.log(LatencyBenchmark.formatResults(results));
+    alert(LatencyBenchmark.formatResults(results));
+};
+
 onMounted(loadLevels);
 </script>
 
@@ -60,7 +69,7 @@ onMounted(loadLevels);
     >
       {{ isPaused ? 'Start' : 'Stop' }}
     </UButton>
-
+      <UButton icon="i-heroicons-beaker" color="gray" variant="ghost" @click="runBenchmark" label="Bench" />
     <UButton 
       icon="i-heroicons-rocket-launch" 
       variant="ghost" 
