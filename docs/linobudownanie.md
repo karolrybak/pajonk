@@ -5,4 +5,8 @@ Technicznie powinno to działać tak, że do kursora myszy przypinamy tymczasowy
 Teraz w trybie auto user może przełączyć się do trybu manual za pomocą MMB lub scrolla. W trybie manual user sam decyduje o tym ile fragmentów będzie mieć lina i kontroluje to za pomocą scrolla. Scroll up, dodaje nowe segmenty, Scroll down usuwa. Segmenty zawsze są usuwane/dodawane z końca liny przypiętego do myszki. User może przełączyć z powrotem w tryb auto za pomocą MMB
 3. Cały czas wyświetlane jest nasze gizmo, które teraz już pokazuje czy drugi koniec liny będzie przypięty czy wolny. LMB zakańcza budowę liny, natomiast RMB -> Cancel
 
-A i zrobiłeś pajęczynke :)
+
+1. gizmo przy budowaniu liny musimy trochę usprytnić, powinno się zachowywać tak, że jest lekkie przyciąganie tego gizma do obiektów. Ale samo gizmo nie powinno wchodzić w obręb obiektu, tylko wędrować wzdłuż jego krawędzi.
+2. Oprócz tego jak przypinamy linę do obiektu, to lina łączy się ze środkiem obiektu, przez co tworzą się widmowe siły, musimy tutaj niestety rozbudować nieco logikę i chyba tworzyć tak naprawdę dwa constrainty. Jeden ze środka particle do którego przypinamy do jego powierzchni, i z tego dodatkowego particle na powierzchni dopiero do liny.
+3. Drugi koniec liny nie daje się przypiąć do innej liny, ani do particle
+4. Lina jest zdecydowanie zbyt elastyczna - to nie guma ze starych gaci tylko supersilna nić pająka

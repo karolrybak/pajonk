@@ -24,7 +24,7 @@ export class AppEngine {
 
     params: SimulationParams = {
         dt: 1/60,
-        substeps: 8,
+        substeps: 24,
         gravity: new Float32Array([0, -9.81]),
         worldBounds: new Float32Array([-BOUNDS.width/2, -BOUNDS.height/2, BOUNDS.width/2, BOUNDS.height/2]),
         collisionIterations: 2,
@@ -63,6 +63,14 @@ export class AppEngine {
     dispose() {
         this.alive = false;
         this.canvas.remove();
+    }
+
+    clearScene() {
+        const entities = [...world.entities];
+        for (const ent of entities) {
+            world.remove(ent);
+        }
+        this.selectedEntity = null;
     }
 
     protected onUpdate() {}
@@ -105,32 +113,50 @@ export class AppEngine {
             if (ent.physicsParticle) {
                 const b = ent.physicsBody!;
                 const isSelected = this.selectedEntity === ent;
-                const isBuilding = ent.tags?.includes('building') || buildingSegments.has(ent);
+                const isDragging = (this as any).draggedEntity === ent;
+                const isBuildingSegment = buildingSegments.has(ent);
+                const isBuildingRope = ent.tags?.includes('building');
+                const isSimAlways = isBuildingSegment || isBuildingRope;
+
                 let nextFlags = b.flags;
                 if (isSelected) nextFlags |= 1; else nextFlags &= ~1;
-                if (isBuilding) nextFlags |= 2; else nextFlags &= ~2;
+                if (isSimAlways) nextFlags |= 2; else nextFlags &= ~2;
 
-                if (nextFlags !== b.flags || isBuilding) {
+                // Only trigger a full particle metadata sync if flags actually changed.
+                if (nextFlags !== b.flags) {
                     b.flags = nextFlags;
-                    this.physics.setParticle(ent.physicsParticle.index, ent.transform.position, ent.transform.position, b.mass, b.friction, ent.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
+                    const syncPos = ent.transform.position;
+                    this.physics.setParticle(ent.physicsParticle.index, syncPos, syncPos, b.mass, b.friction, ent.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
+                } else if (isDragging) {
+                    // Fast path for dragging: inject position directly to GPU without full buffer sync
+                    this.physics.updateParticlePos(ent.physicsParticle.index, ent.transform.position);
                 }
             }
         }
 
         for (const ent of world.with('physicsConstraint')) {
             const c = ent.physicsConstraint;
-            if (c.index === undefined || c.index === -1) {
+            const isNew = c.index === undefined || c.index === -1;
+            
+            if (isNew) {
                 const [idx] = this.physics.allocateConstraints(1);
-                if (idx !== undefined) {
-                    c.index = idx;
-                    const aIdx = c.targetA.physicsParticle?.index;
-                    let bIdx = -1;
-                    if (!(c.targetB instanceof Float32Array)) bIdx = (c.targetB as Entity).physicsParticle?.index ?? -1;
-                    
+                if (idx !== undefined) c.index = idx;
+            }
+
+            if (c.index !== undefined && c.index !== -1) {
+                const aIdx = c.targetA.physicsParticle?.index;
+                let bIdx = -1;
+                if (!(c.targetB instanceof Float32Array)) bIdx = (c.targetB as Entity).physicsParticle?.index ?? -1;
+
+                // Sync if new OR if it's a world-space anchor (Type 3) or building
+                // Type 3 anchors and building ropes need constant position updates on GPU
+                const isDynamicAnchor = (c.targetB instanceof Float32Array) || ent.tags?.includes('building');
+                
+                if (isNew || isDynamicAnchor) {
                     if (aIdx !== undefined) {
-                        c.color = this.physics.assignColor(aIdx, bIdx);
+                        if (isNew) c.color = this.physics.assignColor(aIdx, bIdx);
                         const anchor = (c.targetB instanceof Float32Array) ? c.targetB : new Float32Array([0,0]);
-                        this.physics.setConstraint(idx, aIdx, bIdx, c.color, c.type, c.restValue, c.stiffness, anchor);
+                        this.physics.setConstraint(c.index, aIdx, bIdx, c.color!, c.type, c.restValue, c.compliance, anchor);
                     }
                 }
             }
@@ -138,7 +164,13 @@ export class AppEngine {
     }
 
     private syncFromGPU() {
+        const dragged = (this as any).draggedEntity;
         for (const ent of world.with('physicsParticle', 'transform')) {
+            // We only skip syncing the dragged entity to avoid jitter between mouse and GPU.
+            // Rope segments (even building ones) must be synced so their JS transforms 
+            // stay up to date with the GPU simulation.
+            if (ent === dragged) continue;
+            
             const off = ent.physicsParticle.index * 8;
             ent.transform.position[0] = this.physics.particles[off]!;
             ent.transform.position[1] = this.physics.particles[off + 1]!;
@@ -172,6 +204,7 @@ export class AppEngine {
             this.accumulator -= this.params.dt;
             steps++;
         }
+        this.physics.updateQueries(this.params);
         this.syncFromGPU();
         this.onUpdate();
         this.renderer.render();

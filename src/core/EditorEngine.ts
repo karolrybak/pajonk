@@ -18,6 +18,9 @@ export class EditorEngine extends AppEngine {
     onSelectEntity?: (ent: Entity | null) => void;
     onRopeStateChange?: () => void;
 
+    private mouseHandlers: { name: string, fn: any }[] = [];
+    private activeAnchorQuery = false;
+
     constructor(container: HTMLElement) {
         super(container);
     }
@@ -25,14 +28,25 @@ export class EditorEngine extends AppEngine {
     override async init() {
         await super.init();
         
-        window.addEventListener('mousedown', (e) => this.onMouseDown(e));
-        window.addEventListener('mousemove', (e) => this.onMouseMove(e));
-        window.addEventListener('mouseup', () => (this.draggedEntity = null));
-        window.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
-        window.addEventListener('contextmenu', (e) => {
+        const add = (name: string, fn: any, opts?: any) => {
+            const handler = fn.bind(this);
+            window.addEventListener(name, handler, opts);
+            this.mouseHandlers.push({ name, fn: handler });
+        };
+
+        add('mousedown', this.onMouseDown);
+        add('mousemove', this.onMouseMove);
+        add('mouseup', () => (this.draggedEntity = null));
+        add('wheel', this.onWheel, { passive: false });
+        add('contextmenu', (e: MouseEvent) => {
              if (this.tool === 'build_line' || this.activeRope) e.preventDefault();
              if (this.activeRope) this.cancelRope();
         });
+    }
+
+    override dispose() {
+        for (const h of this.mouseHandlers) window.removeEventListener(h.name, h.fn);
+        super.dispose();
     }
 
     cancelRope() {
@@ -52,7 +66,7 @@ export class EditorEngine extends AppEngine {
         this.onRopeStateChange?.();
     }
 
-    private onMouseDown(e: MouseEvent) {
+    private async onMouseDown(e: MouseEvent) {
         if (e.target !== this.canvas) return;
         const pos = getMouseWorld(e, this.canvas, BOUNDS);
         
@@ -66,13 +80,20 @@ export class EditorEngine extends AppEngine {
         if (this.tool === 'build_line') {
             if (e.button === 2) return;
             
-            const anchor = this.physics.findAnchor(pos);
+            const ignore = this.activeRope ? this.activeRope.physicsRope!.segments.map(s => s.physicsParticle?.index ?? -1) : [];
+            const anchor = await this.physics.findAnchor(pos, ignore);
+            if (this.tool !== 'build_line') return;
+            
             const pinPos = anchor ? anchor.pos : pos.slice();
 
             if (!this.activeRope) {
                 const seg0 = addObject(this.physics, 'dynamic', 'circle', pinPos, 0.05, 6);
-                const seg1 = addObject(this.physics, 'dynamic', 'circle', pinPos.slice(), 0.05, 6);
+                const seg1 = addObject(this.physics, 'dynamic', 'circle', vec2.add(pinPos, [0.01, 0.01]) as Float32Array, 0.05, 6);
                 
+                seg0.physicsBody!.mass = 0.1;
+                seg1.physicsBody!.mass = 0.1;
+                seg0.physicsBody!.collisionMask = 0;
+                seg1.physicsBody!.collisionMask = 0;
                 if (anchor?.type === 'static') seg0.physicsBody!.mass = 0;
 
                 this.activeRope = world.add({
@@ -86,15 +107,17 @@ export class EditorEngine extends AppEngine {
                 });
 
                 const targetB = anchor?.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : pinPos;
-                RopeSystem.createLink(seg0, targetB, 0.05, 0);
-                RopeSystem.createLink(seg0, seg1, 0.1, 0.0001);
+                const startRest = anchor?.radius !== undefined ? (0.05 + anchor.radius) : 0.05;
+                RopeSystem.createLink(seg0, targetB, startRest, 0);
+                RopeSystem.createLink(seg0, seg1, 0.1, 0);
                 this.onRopeStateChange?.();
             } else {
                 const lastSeg = this.activeRope.physicsRope!.segments[this.activeRope.physicsRope!.segments.length - 1]!;
                 if (anchor) {
                     lastSeg.transform!.position.set(anchor.pos);
                     const targetB = anchor.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : anchor.pos;
-                    RopeSystem.createLink(lastSeg, targetB, 0.05, 0);
+                    const endRest = anchor.radius !== undefined ? (0.05 + anchor.radius) : 0.05;
+                    RopeSystem.createLink(lastSeg, targetB, endRest, 0);
                     if (anchor.type === 'static') lastSeg.physicsBody!.mass = 0;
                 }
                 this.activeRope.tags = this.activeRope.tags.filter(t => t !== 'building');
@@ -120,13 +143,19 @@ export class EditorEngine extends AppEngine {
         }
     }
 
-    private onMouseMove(e: MouseEvent) {
+    private async onMouseMove(e: MouseEvent) {
         const pos = getMouseWorld(e, this.canvas, BOUNDS);
         (this as any).mouseWorld = pos;
         
         if (this.renderer) {
             if (this.tool === 'build_line') {
-                const anchor = this.physics.findAnchor(pos);
+                if (this.activeAnchorQuery) return;
+                this.activeAnchorQuery = true;
+                const ignore = this.activeRope ? this.activeRope.physicsRope!.segments.map(s => s.physicsParticle?.index ?? -1) : [];
+                const anchor = await this.physics.findAnchor(pos, ignore);
+                this.activeAnchorQuery = false;
+                if (this.tool !== 'build_line') return;
+
                 const color = anchor ? (anchor.type === 'static' ? new Float32Array([0.2, 0.4, 1.0, 0.8]) : new Float32Array([0.2, 1.0, 0.4, 0.8])) : new Float32Array([0.8, 0.8, 0.8, 0.5]);
                 const gizmoPos = anchor ? anchor.pos : pos;
                 this.renderer.updateGizmo(gizmoPos, color);
@@ -136,7 +165,15 @@ export class EditorEngine extends AppEngine {
         }
 
         if (this.draggedEntity && this.draggedEntity.transform) {
-            this.draggedEntity.transform.position.set(vec2.add(pos, this.dragOffset) as Float32Array);
+            const newPos = vec2.add(pos, this.dragOffset) as Float32Array;
+            this.draggedEntity.transform.position.set(newPos);
+            
+            const parentRope = world.with('physicsRope').entities.find(r => 
+                r.physicsRope!.segments.includes(this.draggedEntity!)
+            );
+            if (parentRope && !parentRope.tags.includes('building')) {
+                parentRope.tags.push('building');
+            }
         }
     }
 

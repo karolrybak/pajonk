@@ -1,6 +1,7 @@
 import { World } from 'miniplex';
 
 export type Entity = {
+    id: string;
     name: string;
     tags: string[];
 
@@ -43,7 +44,7 @@ export type Entity = {
         targetB: Entity | Float32Array;
         targetC?: Entity;
         restValue: number;
-        stiffness: number;
+        compliance: number;
         index: number;
         color?: number;
     };

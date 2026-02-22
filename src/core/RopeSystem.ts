@@ -15,9 +15,8 @@ export const RopeSystem = {
             if (ropeEnt.tags.includes('building')) {
                 lastEnt.transform.position.set(mouseWorld);
                 if (lastEnt.physicsParticle) {
-                    // Force GPU position to follow mouse exactly to prevent 'slipping'
-                    const b = lastEnt.physicsBody!;
-                    physics.setParticle(lastEnt.physicsParticle.index, mouseWorld, mouseWorld, b.mass, b.friction, 0.05, b.collisionMask, b.appearance, b.flags);
+                    // Fast GPU update to track mouse perfectly without halting the rest of the simulation
+                    physics.updateParticlePos(lastEnt.physicsParticle.index, mouseWorld);
                 }
                 
                 const engine = (window as any).engine;
@@ -31,7 +30,8 @@ export const RopeSystem = {
                         const newPos = vec2.lerp(prevEnt.transform!.position, mouseWorld, 0.5);
                         const newSeg = addObject(physics, 'dynamic', 'circle', newPos as Float32Array, 0.05, 6);
                         newSeg.name = `rope_seg_${ropeEnt.id}`;
-                        newSeg.physicsBody!.collisionMask = 0xFD;
+                        newSeg.physicsBody!.mass = 0.1;
+                        newSeg.physicsBody!.collisionMask = 0; // Rope segments shouldn't collide by default
 
                         rope.segments.splice(rope.segments.length - 1, 0, newSeg);
 
@@ -42,7 +42,6 @@ export const RopeSystem = {
 
                         RopeSystem.createLink(prevEnt, newSeg, rope.segmentLength, rope.compliance);
                         RopeSystem.createLink(newSeg, lastEnt, rope.segmentLength, rope.compliance);
-                        physics.queuedSync = true;
                         if (engine && engine.onRopeStateChange) engine.onRopeStateChange();
                     }
                 }
@@ -62,7 +61,7 @@ export const RopeSystem = {
         }
     },
 
-    createLink: (a: Entity, b: Entity | Float32Array, rest: number, stiff: number) => {
+    createLink: (a: Entity, b: Entity | Float32Array, rest: number, compliance: number) => {
         world.add({
             id: Math.random().toString(36).substr(2, 9),
             name: 'rope_constraint',
@@ -72,7 +71,7 @@ export const RopeSystem = {
                 targetA: a,
                 targetB: b,
                 restValue: rest,
-                stiffness: stiff,
+                compliance: compliance,
                 index: -1
             }
         });
