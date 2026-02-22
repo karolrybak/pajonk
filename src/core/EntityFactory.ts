@@ -19,18 +19,10 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
         if(!ent.sdfCollider) throw new Error('sdfCollider is undefined');
         ent.staticBody = { friction: 0.5, appearance: appearance ?? 1, flags: 0 };
         ent.editor_ui = { visible: true };
-        const idx = physics.numObstacles++;
-        physics.setObstacle(idx, position, 0, ent.sdfCollider.shapeType, params, 0.5, ent.staticBody.appearance, 0);
     } else {
         ent.physicsBody = { mass: 1.0, friction: 0.5, collisionMask: 0xFF, groupId: 0, appearance: appearance ?? 2, flags: 0 };
         if (appearance !== 6) {
             ent.editor_ui = { visible: true };
-        }
-        const indices = physics.allocateParticles(1);
-        const idx = indices[0];
-        if (idx !== undefined) {
-            world.addComponent(ent, 'physicsParticle', { index: idx });
-            physics.setParticle(idx, position, position, 1.0, 0.5, params[0]!, 0xFF, ent.physicsBody.appearance, 0);
         }
     }
 

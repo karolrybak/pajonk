@@ -147,6 +147,7 @@ fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
     let appearance = (data_val >> 8u) & 0xFFu;
     let flags = (data_val >> 16u) & 0xFFu;
 
+    if (appearance == 0u) { discard; }
     if (appearance == 1u) { color = vec3<f32>(0.2, 0.2, 0.2); }
     else if (appearance == 2u) { color = vec3<f32>(0.0, 1.0, 0.5); }
     else if (appearance == 3u) { color = vec3<f32>(0.5, 0.3, 0.1); }

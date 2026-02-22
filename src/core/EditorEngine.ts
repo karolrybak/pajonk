@@ -94,7 +94,10 @@ export class EditorEngine extends AppEngine {
                 seg1.physicsBody!.mass = 0.1;
                 seg0.physicsBody!.collisionMask = 0;
                 seg1.physicsBody!.collisionMask = 0;
-                if (anchor?.type === 'static') seg0.physicsBody!.mass = 0;
+                if (anchor?.type === 'static') {
+                    seg0.physicsBody!.mass = 0;
+                    seg0.physicsBody!.isDirty = true;
+                }
 
                 this.activeRope = world.add({
                     id: Math.random().toString(36).substr(2, 9), name: 'rope', tags: ['rope', 'building'],
@@ -118,7 +121,10 @@ export class EditorEngine extends AppEngine {
                     const targetB = anchor.targetIdx !== undefined ? world.entities.find(ent => ent.physicsParticle?.index === anchor.targetIdx)! : anchor.pos;
                     const endRest = anchor.radius !== undefined ? (0.05 + anchor.radius) : 0.05;
                     RopeSystem.createLink(lastSeg, targetB, endRest, 0);
-                    if (anchor.type === 'static') lastSeg.physicsBody!.mass = 0;
+                    if (anchor.type === 'static') {
+                        lastSeg.physicsBody!.mass = 0;
+                        lastSeg.physicsBody!.isDirty = true;
+                    }
                 }
                 this.activeRope.tags = this.activeRope.tags.filter(t => t !== 'building');
                 this.activeRope = null;
@@ -190,6 +196,8 @@ export class EditorEngine extends AppEngine {
                 if (last.transform) {
                     const nextPos = vec2.add(last.transform.position, new Float32Array([0, 0.1])) as Float32Array;
                     const newSeg = addObject(this.physics, 'dynamic', 'circle', nextPos, 0.05, 6);
+                    newSeg.physicsBody!.mass = 0.1;
+                    newSeg.physicsBody!.collisionMask = 0; // Prevent violent collisions inside rope
                     RopeSystem.createLink(last, newSeg, rope.segmentLength, rope.compliance);
                     rope.segments.push(newSeg);
                     this.onRopeStateChange?.();

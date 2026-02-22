@@ -4,6 +4,9 @@ import { world, type Entity } from '../ecs';
 import { RopeSystem } from './RopeSystem';
 import { Renderer } from './Renderer';
 
+/**
+ * AppEngine handles the main loop, GPU physics stepping, and CPU-GPU synchronization.
+ */
 export class AppEngine {
     canvas: HTMLCanvasElement;
     device!: GPUDevice;
@@ -38,6 +41,7 @@ export class AppEngine {
         this.canvas.style.position = 'absolute';
         container.appendChild(this.canvas);
         
+        // Cleanup GPU resources when entities are removed from ECS
         world.onEntityRemoved.subscribe((ent) => {
             if (ent.physicsParticle) this.physics.releaseParticles([ent.physicsParticle.index]);
             if (ent.physicsConstraint?.index !== undefined && ent.physicsConstraint.index !== -1) {
@@ -78,21 +82,27 @@ export class AppEngine {
     private syncToGPU() {
         if (!this.physics.ready) return;
 
+        // Sync Static Obstacles if the count changed
         const staticEntities = world.with('staticBody', 'transform', 'sdfCollider');
         const currentCount = staticEntities.entities.length;
-        const needsFullObstacleSync = currentCount !== this.lastObstacleCount;
         
-        if (needsFullObstacleSync) {
+        if (currentCount !== this.lastObstacleCount) {
             this.physics.setObstacle(0, new Float32Array([0, 0]), 0, 2, new Float32Array([BOUNDS.width, BOUNDS.height, 0, 0]), 0.1, 7, 0);
             let obsIdx = 1;
             for (const ent of staticEntities) {
                 const b = ent.staticBody!;
                 this.physics.setObstacle(obsIdx++, ent.transform!.position, ent.transform!.rotation, ent.sdfCollider!.shapeType, ent.sdfCollider!.parameters, b.friction, b.appearance, b.flags);
             }
+            // Clear trailing obstacles to avoid rendering artifacts
+            const oldObsCount = this.physics.numObstacles;
+            for (let i = obsIdx; i < oldObsCount; i++) {
+                this.physics.setObstacle(i, new Float32Array([0,0]), 0, 0, new Float32Array([0,0,0,0]), 0, 0, 0);
+            }
             this.physics.numObstacles = obsIdx;
             this.lastObstacleCount = currentCount;
         }
 
+        // Track entities that must be simulated even during pause (e.g. ropes being built)
         const buildingSegments = new Set<Entity>();
         for (const rope of world.with('physicsRope')) {
             if (rope.tags.includes('building')) {
@@ -100,13 +110,14 @@ export class AppEngine {
             }
         }
 
+        // Sync Dynamic Bodies / Particles
         for (const ent of world.with('physicsBody', 'transform')) {
+            let isNew = false;
             if (!ent.physicsParticle) {
                 const [idx] = this.physics.allocateParticles(1);
                 if (idx !== undefined) {
                     world.addComponent(ent, 'physicsParticle', { index: idx });
-                    const b = ent.physicsBody!;
-                    this.physics.setParticle(idx, ent.transform.position, ent.transform.position, b.mass, b.friction, ent.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
+                    isNew = true;
                 }
             }
             
@@ -114,49 +125,51 @@ export class AppEngine {
                 const b = ent.physicsBody!;
                 const isSelected = this.selectedEntity === ent;
                 const isDragging = (this as any).draggedEntity === ent;
-                const isBuildingSegment = buildingSegments.has(ent);
-                const isBuildingRope = ent.tags?.includes('building');
-                const isSimAlways = isBuildingSegment || isBuildingRope;
+                const isSimAlways = buildingSegments.has(ent) || ent.tags?.includes('building');
 
                 let nextFlags = b.flags;
                 if (isSelected) nextFlags |= 1; else nextFlags &= ~1;
                 if (isSimAlways) nextFlags |= 2; else nextFlags &= ~2;
 
-                // Only trigger a full particle metadata sync if flags actually changed.
-                if (nextFlags !== b.flags) {
+                if (isNew || nextFlags !== b.flags || b.isDirty) {
                     b.flags = nextFlags;
-                    const syncPos = ent.transform.position;
-                    this.physics.setParticle(ent.physicsParticle.index, syncPos, syncPos, b.mass, b.friction, ent.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
+                    b.isDirty = false;
+                    this.physics.setParticle(ent.physicsParticle.index, ent.transform.position, ent.transform.position, b.mass, b.friction, ent.sdfCollider?.parameters[0] || 0.5, b.collisionMask, b.appearance, b.flags);
                 } else if (isDragging) {
-                    // Fast path for dragging: inject position directly to GPU without full buffer sync
                     this.physics.updateParticlePos(ent.physicsParticle.index, ent.transform.position);
                 }
             }
         }
 
+        // Sync Constraints
         for (const ent of world.with('physicsConstraint')) {
             const c = ent.physicsConstraint;
-            const isNew = c.index === undefined || c.index === -1;
-            
-            if (isNew) {
+            if (c.index === undefined || c.index === -1) {
                 const [idx] = this.physics.allocateConstraints(1);
                 if (idx !== undefined) c.index = idx;
             }
 
             if (c.index !== undefined && c.index !== -1) {
-                const aIdx = c.targetA.physicsParticle?.index;
-                let bIdx = -1;
-                if (!(c.targetB instanceof Float32Array)) bIdx = (c.targetB as Entity).physicsParticle?.index ?? -1;
+                if (!c.isSynced) {
+                    const aIdx = c.targetA.physicsParticle?.index;
+                    let bIdx = -1;
+                    let anchor = new Float32Array([0, 0]);
+                    
+                    if (c.targetB instanceof Float32Array) {
+                        anchor = c.targetB;
+                    } else {
+                        const tEnt = c.targetB as Entity;
+                        if (tEnt.physicsParticle) {
+                            bIdx = tEnt.physicsParticle.index;
+                        } else if (tEnt.transform) {
+                            anchor = tEnt.transform.position;
+                        }
+                    }
 
-                // Sync if new OR if it's a world-space anchor (Type 3) or building
-                // Type 3 anchors and building ropes need constant position updates on GPU
-                const isDynamicAnchor = (c.targetB instanceof Float32Array) || ent.tags?.includes('building');
-                
-                if (isNew || isDynamicAnchor) {
-                    if (aIdx !== undefined) {
-                        if (isNew) c.color = this.physics.assignColor(aIdx, bIdx);
-                        const anchor = (c.targetB instanceof Float32Array) ? c.targetB : new Float32Array([0,0]);
+                    if (aIdx !== undefined && (c.targetB instanceof Float32Array || bIdx !== -1 || (c.targetB as Entity).transform)) {
+                        c.color = this.physics.assignColor(aIdx, bIdx);
                         this.physics.setConstraint(c.index, aIdx, bIdx, c.color!, c.type, c.restValue, c.compliance, anchor);
+                        c.isSynced = true;
                     }
                 }
             }
@@ -166,11 +179,7 @@ export class AppEngine {
     private syncFromGPU() {
         const dragged = (this as any).draggedEntity;
         for (const ent of world.with('physicsParticle', 'transform')) {
-            // We only skip syncing the dragged entity to avoid jitter between mouse and GPU.
-            // Rope segments (even building ones) must be synced so their JS transforms 
-            // stay up to date with the GPU simulation.
             if (ent === dragged) continue;
-            
             const off = ent.physicsParticle.index * 8;
             ent.transform.position[0] = this.physics.particles[off]!;
             ent.transform.position[1] = this.physics.particles[off + 1]!;
@@ -183,7 +192,7 @@ export class AppEngine {
 
         const now = performance.now();
         let frameTime = (now - this.lastTime) / 1000;
-        if (frameTime > 0.25) frameTime = 0.25;
+        if (frameTime > 0.25) frameTime = 0.25; // Prevents spiral of death
         this.lastTime = now;
         this.accumulator += frameTime;
 
@@ -195,11 +204,12 @@ export class AppEngine {
             this.fpsTimer -= 1.0;
         }
 
+        RopeSystem.update(this.physics, (this as any).mouseWorld || new Float32Array([0,0]));
         this.syncToGPU();
+        
         let steps = 0;
         this.params.isPaused = this.isPaused;
         while (this.accumulator >= this.params.dt && steps < 5) {
-            RopeSystem.update(this.physics, (this as any).mouseWorld || new Float32Array([0,0]));
             this.physics.step(this.params);
             this.accumulator -= this.params.dt;
             steps++;

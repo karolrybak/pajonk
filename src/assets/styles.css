@@ -1,9 +1,9 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
-body {
+/* body {
     background: #000;;
-}
+} */
 
 #app {
     height: 100vh;

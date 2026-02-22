@@ -3,6 +3,16 @@ export const MAX_CONSTRAINTS = 8192;
 export const MAX_OBSTACLES = 1024;
 export const MAX_QUERIES = 128;
 
+// Command types for the GPU Command Queue
+const CMD = {
+    ADD_PARTICLE: 1,
+    MOVE_PARTICLE: 2,
+    SET_CONSTRAINT: 3,
+    REM_PARTICLE: 4,
+    REM_CONSTRAINT: 5,
+    SET_OBSTACLE: 6
+};
+
 export interface SimulationParams {
     dt: number;
     substeps: number;
@@ -27,6 +37,7 @@ export class WebPhysics {
     device: GPUDevice;
     ready = false;
 
+    // Main CPU-side buffer mirrors (used for local searches and initialization)
     particles = new Float32Array(MAX_PARTICLES * 8);
     constraints = new Int32Array(MAX_CONSTRAINTS * 8).fill(-1);
     obstacles = new Float32Array(MAX_OBSTACLES * 8);
@@ -55,6 +66,7 @@ export class WebPhysics {
     public numObstacles = 0;
     public maxColor = 0;
 
+    // Command Queue structure: 48 bytes per command (12 floats/u32s)
     private commandQueue = new ArrayBuffer(4096 * 48);
     private commandU32 = new Uint32Array(this.commandQueue);
     private commandF32 = new Float32Array(this.commandQueue);
@@ -63,6 +75,7 @@ export class WebPhysics {
     private pendingQueries: { type: number, origin: Float32Array, dirOrRadius: Float32Array, maxDist: number, mask: number, resolve: Function }[] = [];
     private readingQueries: Function[] = [];
 
+    // Graph coloring state for constraints
     private particleColors = Array.from({ length: MAX_PARTICLES }, () => new Set<number>());
     private colorCounts = new Int32Array(16);
 
@@ -100,6 +113,7 @@ export class WebPhysics {
             ]
         });
 
+        // Create multiple uniform buffers for different coloring phases
         for (let i = 0; i < 16; i++) {
             const pBuf = this.device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
             this.paramsBuffers.push(pBuf);
@@ -131,23 +145,23 @@ export class WebPhysics {
 
     private pushCommand(cmdType: number, index: number, d0: number[], d1: number[], d0w_is_u32 = false, d1w_is_u32 = false) {
         if (this.numCommands >= 4096) return;
-        const off = this.numCommands * 12;
+        const off = this.numCommands * 12; // 12 elements * 4 bytes = 48 byte struct
         this.commandU32[off] = cmdType;
         this.commandU32[off + 1] = index;
-        this.commandU32[off + 2] = 0;
-        this.commandU32[off + 3] = 0;
+        this.commandU32[off + 2] = 0; // Pad
+        this.commandU32[off + 3] = 0; // Pad
         
-        this.commandF32[off + 4] = d0[0] || 0;
-        this.commandF32[off + 5] = d0[1] || 0;
-        this.commandF32[off + 6] = d0[2] || 0;
-        if (d0w_is_u32) this.commandU32[off + 7] = d0[3] || 0;
-        else this.commandF32[off + 7] = d0[3] || 0;
+        this.commandF32[off + 4] = d0[0] ?? 0;
+        this.commandF32[off + 5] = d0[1] ?? 0;
+        this.commandF32[off + 6] = d0[2] ?? 0;
+        if (d0w_is_u32) this.commandU32[off + 7] = d0[3] ?? 0;
+        else this.commandF32[off + 7] = d0[3] ?? 0;
 
-        this.commandF32[off + 8] = d1[0] || 0;
-        this.commandF32[off + 9] = d1[1] || 0;
-        this.commandF32[off + 10] = d1[2] || 0;
-        if (d1w_is_u32) this.commandU32[off + 11] = d1[3] || 0;
-        else this.commandF32[off + 11] = d1[3] || 0;
+        this.commandF32[off + 8] = d1[0] ?? 0;
+        this.commandF32[off + 9] = d1[1] ?? 0;
+        this.commandF32[off + 10] = d1[2] ?? 0;
+        if (d1w_is_u32) this.commandU32[off + 11] = d1[3] ?? 0;
+        else this.commandF32[off + 11] = d1[3] ?? 0;
 
         this.numCommands++;
     }
@@ -196,7 +210,7 @@ export class WebPhysics {
             this.particleAlloc[idx] = 0;
             if (this.particleColors[idx]) this.particleColors[idx].clear();
             this.particles.fill(0, idx * 8, idx * 8 + 8);
-            this.pushCommand(4, idx, [0,0,0,0], [0,0,0,0]);
+            this.pushCommand(CMD.REM_PARTICLE, idx, [0,0,0,0], [0,0,0,0]);
         }
     }
 
@@ -213,7 +227,7 @@ export class WebPhysics {
             this.removeConstraintColor(idx);
             this.constraintAlloc[idx] = 0;
             this.constraints.fill(-1, idx * 8, idx * 8 + 8);
-            this.pushCommand(5, idx, [0,0,0,0], [0,0,0,0]);
+            this.pushCommand(CMD.REM_CONSTRAINT, idx, [0,0,0,0], [0,0,0,0]);
         }
     }
 
@@ -228,12 +242,12 @@ export class WebPhysics {
         f32[off + 5] = comp;
         f32[off + 6] = anchor[0]!;
         f32[off + 7] = anchor[1]!;
-        this.pushCommand(3, idx, [a, b, color, cType], [restValue, comp, anchor[0]!, anchor[1]!], false, false);
+        this.pushCommand(CMD.SET_CONSTRAINT, idx, [a, b, color, cType], [restValue, comp, anchor[0]!, anchor[1]!], false, false);
     }
 
     setParticle(idx: number, pos: Float32Array, prevPos: Float32Array, mass: number, friction: number, radius: number, mask: number, appearance: number = 0, flags: number = 0) {
         const meta = (mask & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16);
-        this.pushCommand(1, idx, [pos[0]!, pos[1]!, prevPos[0]!, prevPos[1]!], [mass, friction, radius, meta], false, true);
+        this.pushCommand(CMD.ADD_PARTICLE, idx, [pos[0]!, pos[1]!, prevPos[0]!, prevPos[1]!], [mass, friction, radius, meta], false, true);
         
         const off = idx * 8;
         this.particles[off] = pos[0]!; this.particles[off+1] = pos[1]!;
@@ -244,33 +258,19 @@ export class WebPhysics {
 
     updateParticlePos(idx: number, pos: Float32Array) {
         const off = idx * 8;
-        this.particles[off] = pos[0]!;
-        this.particles[off+1] = pos[1]!;
-        this.particles[off+2] = pos[0]!;
-        this.particles[off+3] = pos[1]!;
-        this.pushCommand(2, idx, [pos[0]!, pos[1]!, pos[0]!, pos[1]!], [0,0,0,0], false, false);
+        this.particles[off] = pos[0]!; this.particles[off+1] = pos[1]!;
+        this.particles[off+2] = pos[0]!; this.particles[off+3] = pos[1]!;
+        this.pushCommand(CMD.MOVE_PARTICLE, idx, [pos[0]!, pos[1]!, pos[0]!, pos[1]!], [0,0,0,0]);
     }
 
     setObstacle(idx: number, pos: Float32Array, rotation: number, shapeType: number, params: Float32Array, friction: number, appearance: number = 0, flags: number = 0) {
         const off = idx * 8;
         const u32 = new Uint32Array(this.obstacles.buffer);
-        this.obstacles[off] = pos[0]!; 
-        this.obstacles[off+1] = pos[1]!;
-        this.obstacles[off+2] = rotation; 
         const f8 = Math.max(0, Math.min(255, Math.floor(friction * 255)));
         const meta = (shapeType & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16) | (f8 << 24);
-        u32[off+3] = meta;
-        this.obstacles[off+4] = params[0]!; 
-        this.obstacles[off+5] = params[1]!; 
-        this.obstacles[off+6] = params[2]!;
-        this.obstacles[off+7] = params[3]!;
-        this.pushCommand(6, idx, [pos[0]!, pos[1]!, rotation, meta], [params[0]!, params[1]!, params[2]!, params[3]!], true, false);
-    }
-
-    async findNearest(pos: Float32Array, radius: number, mask: number = 0xFF): Promise<QueryResult> {
-        return new Promise(resolve => {
-            this.pendingQueries.push({ type: 1, origin: pos, dirOrRadius: new Float32Array([radius, 0]), maxDist: 0, mask, resolve });
-        });
+        this.obstacles[off] = pos[0]!; this.obstacles[off+1] = pos[1]!; this.obstacles[off+2] = rotation; u32[off+3] = meta;
+        this.obstacles[off+4] = params[0]!; this.obstacles[off+5] = params[1]!; this.obstacles[off+6] = params[2]!; this.obstacles[off+7] = params[3]!;
+        this.pushCommand(CMD.SET_OBSTACLE, idx, [pos[0]!, pos[1]!, rotation, meta], [params[0]!, params[1]!, params[2]!, params[3]!], true, false);
     }
 
     async queryRadius(pos: Float32Array, radius: number, mask: number = 0xFF): Promise<QueryResult> {
@@ -288,11 +288,7 @@ export class WebPhysics {
     async ping(id: number): Promise<number> {
         return new Promise(resolve => {
             this.pendingQueries.push({
-                type: 4,
-                origin: new Float32Array([0, 0]),
-                dirOrRadius: new Float32Array([0, 0]),
-                maxDist: 0,
-                mask: id,
+                type: 4, origin: new Float32Array([0, 0]), dirOrRadius: new Float32Array([0, 0]), maxDist: 0, mask: id, 
                 resolve: (res: QueryResult) => resolve(res.hitIdx)
             });
         });
@@ -319,12 +315,12 @@ export class WebPhysics {
             return { pos: new Float32Array([pPos[0] + n[0] * pRadius, pPos[1] + n[1] * pRadius]), type: 'particle', targetIdx: nearestP, radius: pRadius };
         }
 
+        // Fallback to static obstacles SDF search
         for (let i = 0; i < this.numObstacles; i++) {
             const off = i * 8;
             const obsPos = new Float32Array([this.obstacles[off]!, this.obstacles[off + 1]!]);
             const rot = this.obstacles[off + 2]!;
-            const meta = new Uint32Array(this.obstacles.buffer)[off + 3]!;
-            const shapeType = meta & 0xFF;
+            const shapeType = new Uint32Array(this.obstacles.buffer)[off + 3]! & 0xFF;
             const p = [this.obstacles[off + 4]!, this.obstacles[off + 5]!, this.obstacles[off + 6]!, this.obstacles[off + 7]!];
 
             const s = Math.sin(-rot), c = Math.cos(-rot);
@@ -334,44 +330,31 @@ export class WebPhysics {
             const lpy = dx * s + dy * c;
 
             let d = 1000.0;
-            if (shapeType === 0) {
-                d = Math.sqrt(lpx*lpx + lpy*lpy) - p[0]!;
-            } else if (shapeType === 1) {
-                const qx = Math.abs(lpx) - (p[0]! * 0.5);
-                const qy = Math.abs(lpy) - (p[1]! * 0.5);
+            if (shapeType === 0) d = Math.sqrt(lpx*lpx + lpy*lpy) - p[0]!;
+            else if (shapeType === 1) {
+                const qx = Math.abs(lpx) - (p[0]! * 0.5), qy = Math.abs(lpy) - (p[1]! * 0.5);
                 d = Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
             }
 
             if (d < 0.8) {
                 const h = 0.001;
                 const getD = (lx: number, ly: number) => {
-                    let dist = 1000.0;
-                    if (shapeType === 0) dist = Math.sqrt(lx*lx + ly*ly) - p[0]!;
-                    else if (shapeType === 1) {
-                        const qx = Math.abs(lx) - (p[0]! * 0.5), qy = Math.abs(ly) - (p[1]! * 0.5);
-                        dist = Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
-                    }
-                    return dist;
+                    if (shapeType === 0) return Math.sqrt(lx*lx + ly*ly) - p[0]!;
+                    const qx = Math.abs(lx) - (p[0]! * 0.5), qy = Math.abs(ly) - (p[1]! * 0.5);
+                    return Math.max(qx, 0) + Math.max(qy, 0) + Math.min(Math.max(qx, qy), 0);
                 };
-                const nx = (getD(lpx + h, lpy) - d) / h;
-                const ny = (getD(lpx, lpy + h) - d) / h;
-                const mag = Math.sqrt(nx*nx + ny*ny);
-                const localN = mag > 0.0001 ? [nx/mag, ny/mag] : [0, 1];
-                const cosR = Math.cos(rot), sinR = Math.sin(rot);
-                const wn = [localN[0] * cosR - localN[1] * sinR, localN[0] * sinR + localN[1] * cosR];
-                return { pos: new Float32Array([pos[0]! - wn[0] * d, pos[1]! - wn[1] * d]), type: 'static', radius: 0 };
+                const localN = [ (getD(lpx+h, lpy)-d)/h, (getD(lpx, lpy+h)-d)/h ];
+                const mag = Math.sqrt(localN[0]!**2 + localN[1]!**2);
+                const wn = [ (localN[0]!/mag)*Math.cos(rot)-(localN[1]!/mag)*Math.sin(rot), (localN[0]!/mag)*Math.sin(rot)+(localN[1]!/mag)*Math.cos(rot) ];
+                return { pos: new Float32Array([pos[0]! - wn[0]! * d, pos[1]! - wn[1]! * d]), type: 'static', radius: 0 };
             }
         }
 
+        // Fallback to world bounds
         const bx = 11.8, by = 6.8;
         if (Math.abs(pos[0]!) > bx || Math.abs(pos[1]!) > by) {
-            const clamped = new Float32Array([
-                Math.max(-bx, Math.min(bx, pos[0]!)),
-                Math.max(-by, Math.min(by, pos[1]!))
-            ]);
-            return { pos: clamped, type: 'static', radius: 0 };
+            return { pos: new Float32Array([Math.max(-bx, Math.min(bx, pos[0]!)), Math.max(-by, Math.min(by, pos[1]!))]), type: 'static', radius: 0 };
         }
-
         return null;
     }
 
@@ -384,12 +367,8 @@ export class WebPhysics {
         const qData = new Float32Array(batch.length * 12);
         const qU32 = new Uint32Array(qData.buffer);
         for(let i=0; i<batch.length; i++) {
-            const b = batch[i]!;
-            const off = i * 12;
-            qU32[off] = b.type;
-            qU32[off+1] = b.mask;
-            qU32[off+2] = 0;
-            qU32[off+3] = 0;
+            const b = batch[i]!, off = i * 12;
+            qU32[off] = b.type; qU32[off+1] = b.mask;
             qData[off+4] = b.origin[0]!; qData[off+5] = b.origin[1]!;
             qData[off+6] = b.dirOrRadius[0]!; qData[off+7] = b.dirOrRadius[1]!;
             qData[off+8] = b.maxDist;
@@ -397,24 +376,12 @@ export class WebPhysics {
         this.device.queue.writeBuffer(this.queryBuffer, 0, qData);
 
         const data = new Float32Array(16);
-        const u32 = new Uint32Array(data.buffer);
-        data[0] = params.dt; u32[1] = params.substeps;
-        data[2] = params.gravity[0]!; data[3] = params.gravity[1]!;
-        data[4] = params.worldBounds[0]!; data[5] = params.worldBounds[1]!;
-        data[6] = params.worldBounds[2]!; data[7] = params.worldBounds[3]!;
-        u32[8] = params.collisionIterations;
-        u32[9] = this.numObstacles;
-        u32[10] = params.isPaused ? 1 : 0;
-        u32[11] = 0;
-        u32[12] = 0;
-        u32[15] = batch.length;
+        new Uint32Array(data.buffer).set([0, 0, 0, 0, 0, 0, 0, 0, 0, this.numObstacles, params.isPaused?1:0, 0, 0, 0, 0, batch.length]);
         this.device.queue.writeBuffer(this.paramsBuffers[0]!, 0, data);
 
         const enc = this.device.createCommandEncoder();
         const pCmd = enc.beginComputePass();
-        pCmd.setBindGroup(0, this.bindGroups[0]!);
-        pCmd.setPipeline(this.pipelines['processQueries']!);
-        pCmd.dispatchWorkgroups(Math.ceil(batch.length / 64));
+        pCmd.setBindGroup(0, this.bindGroups[0]!); pCmd.setPipeline(this.pipelines['processQueries']!); pCmd.dispatchWorkgroups(Math.ceil(batch.length / 64));
         pCmd.end();
 
         enc.copyBufferToBuffer(this.queryResultBuffer, 0, this.queryStagingBuffer, 0, batch.length * 96);
@@ -422,45 +389,24 @@ export class WebPhysics {
 
         this.isQueryReadingBack = true;
         this.queryStagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-            let mapped = true;
             try {
-                const mappedBuffer = this.queryStagingBuffer.getMappedRange();
                 const resData = new ArrayBuffer(batch.length * 96);
-                new Uint8Array(resData).set(new Uint8Array(mappedBuffer, 0, batch.length * 96));
+                new Uint8Array(resData).set(new Uint8Array(this.queryStagingBuffer.getMappedRange(), 0, batch.length * 96));
                 this.queryStagingBuffer.unmap();
-                mapped = false;
                 
-                const rU32 = new Uint32Array(resData);
-                const rI32 = new Int32Array(resData);
-                const rF32 = new Float32Array(resData);
-                
+                const rU32 = new Uint32Array(resData), rI32 = new Int32Array(resData), rF32 = new Float32Array(resData);
                 for(let i=0; i<this.readingQueries.length; i++) {
-                    const off = i * 24;
-                    const count = rU32[off]!;
-                    const hits: number[] = [];
+                    const off = i * 24, count = rU32[off]!, hits = [];
                     for (let k = 0; k < count; k++) hits.push(rI32[off + 8 + k]!);
-                    
-                    const res: QueryResult = {
-                        count,
-                        hitType: rU32[off+1]!,
-                        hitIdx: rI32[off+2]!,
-                        distance: rF32[off+3]!,
-                        hitPos: new Float32Array([rF32[off+4]!, rF32[off+5]!]),
-                        hitNormal: new Float32Array([rF32[off+6]!, rF32[off+7]!]),
-                        hits
-                    };
-                    this.readingQueries[i]!(res);
+                    this.readingQueries[i]!({
+                        count, hitType: rU32[off+1]!, hitIdx: rI32[off+2]!, distance: rF32[off+3]!,
+                        hitPos: new Float32Array([rF32[off+4]!, rF32[off+5]!]), hitNormal: new Float32Array([rF32[off+6]!, rF32[off+7]!]), hits
+                    });
                 }
-            } catch (err) {
-                console.error("Query readback error:", err);
-                if (mapped) this.queryStagingBuffer.unmap();
+            } finally {
+                this.isQueryReadingBack = false; this.readingQueries = [];
             }
-            this.readingQueries = [];
-            this.isQueryReadingBack = false;
-        }).catch(() => {
-            this.readingQueries = [];
-            this.isQueryReadingBack = false;
-        });
+        }).catch(() => { this.isQueryReadingBack = false; });
     }
 
     step(params: SimulationParams) {
@@ -473,43 +419,28 @@ export class WebPhysics {
         }
 
         const writeParams = (ph: number) => {
-            const data = new Float32Array(16);
-            const u32 = new Uint32Array(data.buffer);
-            data[0] = params.dt; u32[1] = params.substeps;
-            data[2] = params.gravity[0]!; data[3] = params.gravity[1]!;
-            data[4] = params.worldBounds[0]!; data[5] = params.worldBounds[1]!;
-            data[6] = params.worldBounds[2]!; data[7] = params.worldBounds[3]!;
-            u32[8] = params.collisionIterations;
-            u32[9] = this.numObstacles;
-            u32[10] = params.isPaused ? 1 : 0;
-            u32[11] = ph;
-            u32[12] = currentCommands;
-            u32[15] = 0;
+            const data = new Float32Array(16), u32 = new Uint32Array(data.buffer);
+            data[0] = params.dt; u32[1] = params.substeps; data[2] = params.gravity[0]!; data[3] = params.gravity[1]!;
+            data[4] = params.worldBounds[0]!; data[5] = params.worldBounds[1]!; data[6] = params.worldBounds[2]!; data[7] = params.worldBounds[3]!;
+            u32[8] = params.collisionIterations; u32[9] = this.numObstacles; u32[10] = params.isPaused ? 1 : 0; u32[11] = ph; u32[12] = currentCommands;
             this.device.queue.writeBuffer(this.paramsBuffers[ph]!, 0, data);
         };
 
         const enc = this.device.createCommandEncoder();
-        
         writeParams(0);
 
         if (currentCommands > 0) {
             const pCmd = enc.beginComputePass();
-            pCmd.setBindGroup(0, this.bindGroups[0]!);
-            pCmd.setPipeline(this.pipelines['processCommands']!);
-            pCmd.dispatchWorkgroups(Math.ceil(currentCommands / 64));
+            pCmd.setBindGroup(0, this.bindGroups[0]!); pCmd.setPipeline(this.pipelines['processCommands']!); pCmd.dispatchWorkgroups(Math.ceil(currentCommands / 64));
             pCmd.end();
         }
 
         const pGridClear = enc.beginComputePass();
-        pGridClear.setBindGroup(0, this.bindGroups[0]!);
-        pGridClear.setPipeline(this.pipelines['clearGrid']!);
-        pGridClear.dispatchWorkgroups(Math.ceil(4096 / 64));
+        pGridClear.setBindGroup(0, this.bindGroups[0]!); pGridClear.setPipeline(this.pipelines['clearGrid']!); pGridClear.dispatchWorkgroups(Math.ceil(4096 / 64));
         pGridClear.end();
 
         const pGridBuild = enc.beginComputePass();
-        pGridBuild.setBindGroup(0, this.bindGroups[0]!);
-        pGridBuild.setPipeline(this.pipelines['buildGrid']!);
-        pGridBuild.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64));
+        pGridBuild.setBindGroup(0, this.bindGroups[0]!); pGridBuild.setPipeline(this.pipelines['buildGrid']!); pGridBuild.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64));
         pGridBuild.end();
 
         const pInt = enc.beginComputePass(); pInt.setBindGroup(0, this.bindGroups[0]!); pInt.setPipeline(this.pipelines['integrate']!); pInt.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pInt.end();
@@ -524,36 +455,45 @@ export class WebPhysics {
                 pConstr.end();
             }
             
-            const pColl = enc.beginComputePass(); pColl.setBindGroup(0, this.bindGroups[0]!); pColl.setPipeline(this.pipelines['solveCollisions']!); pColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pColl.end();
-            const pPColl = enc.beginComputePass(); pPColl.setBindGroup(0, this.bindGroups[0]!); pPColl.setPipeline(this.pipelines['solveParticleCollisions']!); pPColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pPColl.end();
+            const pColl = enc.beginComputePass(); 
+            pColl.setBindGroup(0, this.bindGroups[0]!); 
+            pColl.setPipeline(this.pipelines['solveCollisions']!); 
+            pColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pColl.end();
 
-            const pFric = enc.beginComputePass(); pFric.setBindGroup(0, this.bindGroups[0]!); pFric.setPipeline(this.pipelines['applyFriction']!); pFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pFric.end();
-            const pPFric = enc.beginComputePass(); pPFric.setBindGroup(0, this.bindGroups[0]!); pPFric.setPipeline(this.pipelines['applyParticleFriction']!); pPFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pPFric.end();
+            const pPColl = enc.beginComputePass(); 
+            pPColl.setBindGroup(0, this.bindGroups[0]!); 
+            pPColl.setPipeline(this.pipelines['solveParticleCollisions']!); 
+            pPColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pPColl.end();
+
+            const pFric = enc.beginComputePass(); 
+            pFric.setBindGroup(0, this.bindGroups[0]!); 
+            pFric.setPipeline(this.pipelines['applyFriction']!); 
+            pFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pFric.end();
+
+            const pPFric = enc.beginComputePass(); 
+            pPFric.setBindGroup(0, this.bindGroups[0]!); 
+            pPFric.setPipeline(this.pipelines['applyParticleFriction']!); 
+            pPFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pPFric.end();
         }
 
         if (!this.isReadingBack) {
             enc.copyBufferToBuffer(this.particleBuffer, 0, this.stagingBuffer, 0, this.particles.byteLength);
             this.device.queue.submit([enc.finish()]);
-
             this.isReadingBack = true;
             this.stagingBuffer.mapAsync(GPUMapMode.READ).then(() => {
-                let mapped = true;
                 try {
                     const data = new Float32Array(this.stagingBuffer.getMappedRange());
                     for (const i of this.activeParticleIndices) {
                         const off = i * 8;
-                        this.particles[off] = data[off]!;
-                        this.particles[off + 1] = data[off + 1]!;
-                        this.particles[off + 2] = data[off + 2]!;
-                        this.particles[off + 3] = data[off + 3]!;
+                        this.particles[off] = data[off]!; this.particles[off+1] = data[off+1]!; 
+                        this.particles[off+2] = data[off+2]!; this.particles[off+3] = data[off+3]!;
                     }
                     this.stagingBuffer.unmap();
-                    mapped = false;
-                } catch (err) {
-                    console.error("Step readback error:", err);
-                    if (mapped) this.stagingBuffer.unmap();
-                }
-                this.isReadingBack = false;
+                } finally { this.isReadingBack = false; }
             }).catch(() => { this.isReadingBack = false; });
         } else {
             this.device.queue.submit([enc.finish()]);

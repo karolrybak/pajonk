@@ -95,45 +95,59 @@ watch(() => props.initialLevelName, (newName) => {
 </script>
 
 <template>
-  <div class="h-screen w-screen bg-black text-white overflow-hidden flex flex-col relative">
-    <!-- Overlay Layer -->
-    <div class="absolute inset-0 pointer-events-none z-10 flex flex-col">
-      <TopMenu 
-        class="pointer-events-auto"
-        v-model:level-name="levelName"
-        v-model:is-paused="isPaused"
-        :engine="engine"
-      />
-      
-      <div class="flex-1 relative">
+  <div class="h-screen flex flex-col bg-black text-white overflow-hidden">
+    <!-- Top Menu -->
+    <TopMenu 
+      v-model:level-name="levelName"
+      v-model:is-paused="isPaused"
+      :engine="engine"
+    />
+
+    <div class="flex-1 relative">
         <ObjectList 
-          class="absolute left-4 top-4 bottom-4 w-64 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 overflow-y-auto pointer-events-auto shadow-2xl"
+          class="absolute left-0 top-0 bottom-0 w-64 bg-gray-900/50 backdrop-blur-md overflow-y-auto z-10 border-r border-white/10"
           :selected-entity="selectedEntity" 
           @select="selectedEntity = $event" 
         />
         
         <ObjectProperties 
           v-if="selectedEntity"
-          class="absolute right-4 top-4 bottom-4 w-72 bg-black/60 backdrop-blur-md rounded-xl border border-white/10 overflow-y-auto pointer-events-auto shadow-2xl"
+          class="absolute right-0 top-0 bottom-0 w-72 bg-gray-900/50 backdrop-blur-md overflow-y-auto z-10 border-l border-white/10"
           :selected-entity="selectedEntity" 
           @update="handleUpdate"
           @delete="handleDelete"
         />
 
-        <div class="absolute bottom-8 left-1/2 -translate-x-1/2 pointer-events-auto">
+      <!-- Main Canvas Area -->
+      <div class="absolute inset-0">
+        <div ref="canvasRef" class="w-full h-full" />
+        <span class="absolute top-4 left-4 text-xs font-mono opacity-50 pointer-events-none">FPS: <span>{{ fps }}</span></span>
+
+        <!-- Rope Status Overlay -->
+        <div v-if="ropeState">
+          <div>
+            <div />
+            <span>Mode: <span>{{ ropeState.mode }}</span></span>
+            <div />
+            <span>Segments: <span>{{ ropeState.segments }} / 100</span></span>
+          </div>
+        </div>
+
+        <!-- FPS Overlay (when not building rope) -->
+        <div 
+          v-else
+          class="absolute top-4 left-4 text-xs font-mono opacity-50 pointer-events-none"
+        >
+          {{ fps }} FPS
+        </div>
+
+        <div class="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
           <Toolbar 
             v-model:tool="tool" 
             v-model:placement="placement" 
           />
         </div>
-
-        <div class="absolute top-4 left-72 text-xs font-mono opacity-40 pointer-events-none bg-black/40 px-2 py-1 rounded">
-          FPS: {{ fps }} | ROPE: {{ ropeState ? `${ropeState.mode} (${ropeState.segments})` : 'OFF' }}
-        </div>
       </div>
     </div>
-
-    <!-- Canvas Layer -->
-    <div ref="canvasRef" class="absolute inset-0 z-0" />
   </div>
 </template>

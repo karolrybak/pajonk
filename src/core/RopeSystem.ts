@@ -23,15 +23,17 @@ export const RopeSystem = {
                 const isAuto = engine ? engine.ropeMode === 'auto' : true;
 
                 if (isAuto && rope.segments.length > 1) {
-                    const prevEnt = rope.segments[rope.segments.length - 2]!;
-                    const dist = vec2.distance(prevEnt.transform!.position, mouseWorld);
+                    let prevEnt = rope.segments[rope.segments.length - 2]!;
+                    let dist = vec2.distance(prevEnt.transform!.position, mouseWorld);
                     
-                    if (dist > rope.segmentLength * 1.5 && rope.segments.length < 100) {
-                        const newPos = vec2.lerp(prevEnt.transform!.position, mouseWorld, 0.5);
+                    while (dist > rope.segmentLength * 1.1 && rope.segments.length < 100) {
+                        const ratio = rope.segmentLength / dist;
+                        const newPos = vec2.lerp(prevEnt.transform!.position, mouseWorld, ratio);
                         const newSeg = addObject(physics, 'dynamic', 'circle', newPos as Float32Array, 0.05, 6);
                         newSeg.name = `rope_seg_${ropeEnt.id}`;
                         newSeg.physicsBody!.mass = 0.1;
-                        newSeg.physicsBody!.collisionMask = 0; // Rope segments shouldn't collide by default
+                        newSeg.physicsBody!.collisionMask = 0;
+                        newSeg.physicsBody!.isDirty = true;
 
                         rope.segments.splice(rope.segments.length - 1, 0, newSeg);
 
@@ -43,6 +45,9 @@ export const RopeSystem = {
                         RopeSystem.createLink(prevEnt, newSeg, rope.segmentLength, rope.compliance);
                         RopeSystem.createLink(newSeg, lastEnt, rope.segmentLength, rope.compliance);
                         if (engine && engine.onRopeStateChange) engine.onRopeStateChange();
+                        
+                        prevEnt = newSeg;
+                        dist = vec2.distance(prevEnt.transform!.position, mouseWorld);
                     }
                 }
             }

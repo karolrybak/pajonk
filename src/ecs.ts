@@ -20,6 +20,7 @@ export type Entity = {
         groupId: number;
         appearance: number;
         flags: number;
+        isDirty?: boolean;
     };
 
     staticBody?: {
@@ -47,6 +48,7 @@ export type Entity = {
         compliance: number;
         index: number;
         color?: number;
+        isSynced?: boolean;
     };
 
     physicsRope?: {
