@@ -31,3 +31,11 @@ export const COLLISION_LAYERS = {
     // ... bits 3-6 free
     SPIDER_SILK: 0x80   // Bit 7: Reserved for your spider webbing
 };
+
+export const PHYSICS_CONFIG = {
+    DT: 1 / 60,
+    SUBSTEPS: 24,
+    CONSTRAINT_ITERATIONS: 1, // Iterations of the solver per substep
+    COLLISION_ITERATIONS: 1,  // Iterations of collisions per substep
+    GRAVITY: [0, -9.81] as [number, number]
+};

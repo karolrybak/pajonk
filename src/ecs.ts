@@ -1,4 +1,5 @@
 import { World } from 'miniplex';
+import { markRaw } from 'vue';
 
 export type Entity = {
     id: string;
@@ -58,6 +59,13 @@ export type Entity = {
         segments: Entity[];
         segmentLength: number;
         compliance: number;
+    };
+
+    mesh?: {
+        vertices: Float32Array;
+        indices: Uint16Array;
+        uvs: Float32Array;
+        textureUrl?: string;
     };
 
     editor_ui?: {

@@ -3,7 +3,7 @@ import { listLevels, saveLevel } from '@/core/LevelSystem';
 import type { EditorEngine } from '@/core/EditorEngine';
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { LatencyBenchmark } from '@/core/Benchmark';
+import { LatencyBenchmark, StressBenchmark } from '@/core/Benchmark';
 
 const props = defineProps<{
   engine: EditorEngine | null;
@@ -46,6 +46,12 @@ const runBenchmark = async () => {
     alert(LatencyBenchmark.formatResults(results));
 };
 
+const runStressTest = async () => {
+    if (!props.engine?.physics) return;
+    emit('update:isPaused', false);
+    await StressBenchmark.run(props.engine.physics);
+};
+
 onMounted(loadLevels);
 </script>
 
@@ -68,7 +74,8 @@ onMounted(loadLevels);
       @click="emit('update:isPaused', !isPaused)"
     >
     </UButton>
-      <UButton icon="i-heroicons-beaker" color="gray" variant="ghost" @click="runBenchmark"/>
+      <UButton icon="i-heroicons-beaker" color="gray" variant="ghost" @click="runBenchmark" title="Latency Benchmark"/>
+      <UButton icon="i-heroicons-fire" color="orange" variant="ghost" @click="runStressTest" title="Stress Test (2000 Particles)"/>
     <UButton 
       icon="i-heroicons-rocket-launch" 
       variant="ghost" 

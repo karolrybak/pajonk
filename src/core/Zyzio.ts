@@ -1,5 +1,6 @@
 import { vec2, type Vec2 } from 'wgpu-matrix';
 import { WebPhysics } from '../webPhysics';
+import { PHYSICS_CONFIG } from '../constants';
 import { world, type Entity } from '../ecs';
 import { addObject } from './EntityFactory';
 
@@ -100,7 +101,7 @@ export class Zyzio {
     }
 
     update(keys: { w: boolean, a: boolean, s: boolean, d: boolean, space: boolean }) {
-        const dt = 1/60;
+        const dt = PHYSICS_CONFIG.DT;
         const bPos = this.body.transform!.position as Vec2;
         const moveInput = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
         

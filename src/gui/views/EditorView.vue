@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, shallowRef, onMounted, onUnmounted, watch } from 'vue';
 import { EditorEngine } from '@/core/EditorEngine';
 import { world, type Entity } from '@/ecs';
 import ObjectList from '@/gui/components/ObjectList.vue';
@@ -17,7 +17,7 @@ const engine = ref<EditorEngine | null>(null);
 const fps = ref(0);
 const tool = ref<ToolMode>('select');
 const placement = ref<PlacementState>(null);
-const selectedEntity = ref<Entity | null>(null);
+const selectedEntity = shallowRef<Entity | null>(null);
 const isPaused = ref(true);
 const levelName = ref(props.initialLevelName);
 const ropeState = ref<{ mode: string, segments: number } | null>(null);
@@ -29,10 +29,11 @@ onMounted(async () => {
   editor.onFpsUpdate = (val) => fps.value = val;
   editor.onSelectEntity = (ent) => selectedEntity.value = ent;
   editor.onRopeStateChange = () => {
-    if (editor.activeRope) {
+    const ropeTool = editor.tools['build_line'] as any;
+    if (ropeTool && ropeTool.activeRope) {
       ropeState.value = { 
-        mode: editor.ropeMode.toUpperCase(), 
-        segments: editor.activeRope.physicsRope?.segments.length || 0 
+        mode: ropeTool.ropeMode.toUpperCase(), 
+        segments: ropeTool.activeRope.physicsRope?.segments.length || 0 
       };
     } else {
       ropeState.value = null;
@@ -56,12 +57,6 @@ onUnmounted(() => {
 
 watch(tool, (newTool) => {
   if (engine.value) {
-    if (engine.value.tool === 'build_line' && newTool !== 'build_line') {
-      engine.value.cancelRope();
-    }
-    if (engine.value.tool === 'joint' && newTool !== 'joint') {
-      engine.value.cancelJoint();
-    }
     engine.value.tool = newTool;
   }
 });
@@ -84,8 +79,22 @@ const handleDelete = (ent: Entity) => {
     );
     for (const c of ropeConstraints) world.remove(c);
   }
+
+  const attachedConstraints = world.entities.filter(e => 
+    e.physicsConstraint && 
+    (e.physicsConstraint.targetA === ent || 
+     e.physicsConstraint.targetB === ent ||
+     e.physicsConstraint.targetC === ent)
+  );
+  for (const c of attachedConstraints) world.remove(c);
+
   world.remove(ent);
   selectedEntity.value = null;
+  
+  if (engine.value) {
+    if (engine.value.selectedEntity === ent) engine.value.selectedEntity = null;
+    if (engine.value.draggedEntity === ent) engine.value.draggedEntity = null;
+  }
 };
 
 const handleUpdate = () => {
@@ -108,7 +117,7 @@ const open = ref(true);
     </template>
 
     <template #default="{ collapsed }">
-      <ObjectList      
+      <ObjectList
         :selected-entity="selectedEntity" @select="selectedEntity = $event" />
     </template>
 

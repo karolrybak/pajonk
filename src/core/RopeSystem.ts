@@ -20,7 +20,7 @@ export const RopeSystem = {
                 }
                 
                 const engine = (window as any).engine;
-                const isAuto = engine ? engine.ropeMode === 'auto' : true;
+                const isAuto = engine && engine.tools && engine.tools['build_line'] ? engine.tools['build_line'].ropeMode === 'auto' : true;
 
                 if (isAuto && rope.segments.length > 1) {
                     let prevEnt = rope.segments[rope.segments.length - 2]!;

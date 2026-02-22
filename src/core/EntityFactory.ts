@@ -1,5 +1,6 @@
 import { world, type Entity } from '../ecs';
 import { WebPhysics } from '../webPhysics';
+import { markRaw } from 'vue';
 
 export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape: string, position: Float32Array, customRadius?: number, appearance?: number): Entity => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -26,6 +27,7 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
         }
     }
 
-    world.add(ent);
-    return ent;
+    const rawEnt = markRaw(ent);
+    world.add(rawEnt);
+    return rawEnt;
 };

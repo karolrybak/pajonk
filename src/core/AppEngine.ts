@@ -1,5 +1,5 @@
 import { WebPhysics, type SimulationParams } from '../webPhysics';
-import { BOUNDS } from '../constants';
+import { BOUNDS, PHYSICS_CONFIG } from '../constants';
 import { world, type Entity } from '../ecs';
 import { RopeSystem } from './RopeSystem';
 import { Renderer } from './Renderer';
@@ -26,11 +26,12 @@ export class AppEngine {
     protected lastObstacleCount = -1;
 
     params: SimulationParams = {
-        dt: 1/60,
-        substeps: 24,
-        gravity: new Float32Array([0, -9.81]),
+        dt: PHYSICS_CONFIG.DT,
+        substeps: PHYSICS_CONFIG.SUBSTEPS,
+        gravity: new Float32Array(PHYSICS_CONFIG.GRAVITY),
         worldBounds: new Float32Array([-BOUNDS.width/2, -BOUNDS.height/2, BOUNDS.width/2, BOUNDS.height/2]),
-        collisionIterations: 2,
+        constraintIterations: PHYSICS_CONFIG.CONSTRAINT_ITERATIONS,
+        collisionIterations: PHYSICS_CONFIG.COLLISION_ITERATIONS,
         isPaused: true
     };
 

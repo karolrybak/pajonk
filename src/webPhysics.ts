@@ -19,6 +19,7 @@ export interface SimulationParams {
     substeps: number;
     gravity: Float32Array;
     worldBounds: Float32Array;
+    constraintIterations: number;
     collisionIterations: number;
     isPaused: boolean;
     phase?: number;
@@ -66,6 +67,8 @@ export class WebPhysics {
     private isQueryReadingBack = false;
     public numObstacles = 0;
     public maxColor = 0;
+    public highestParticleIdx = -1;
+    public highestConstraintIdx = -1;
 
     // Command Queue structure: 48 bytes per command (12 floats/u32s)
     private commandQueue = new ArrayBuffer(4096 * 48);
@@ -202,36 +205,57 @@ export class WebPhysics {
                 this.particleAlloc[i] = 1;
                 indices.push(i);
                 this.activeParticleIndices.push(i);
+                this.highestParticleIdx = Math.max(this.highestParticleIdx, i);
             }
         }
         return indices;
     }
 
     releaseParticles(indices: number[]) {
+        let needsRecalc = false;
         const set = new Set(indices);
         this.activeParticleIndices = this.activeParticleIndices.filter(i => !set.has(i));
         for (const idx of indices) {
+            if (idx === this.highestParticleIdx) needsRecalc = true;
             this.particleAlloc[idx] = 0;
             if (this.particleColors[idx]) this.particleColors[idx].clear();
             this.particles.fill(0, idx * 8, idx * 8 + 8);
             this.pushCommand(CMD.REM_PARTICLE, idx, [0,0,0,0], [0,0,0,0]);
+        }
+        if (needsRecalc) {
+            this.highestParticleIdx = -1;
+            for (let i = MAX_PARTICLES - 1; i >= 0; i--) {
+                if (this.particleAlloc[i]) { this.highestParticleIdx = i; break; }
+            }
         }
     }
 
     allocateConstraints(count: number): number[] {
         const indices: number[] = [];
         for (let i = 0; i < MAX_CONSTRAINTS && indices.length < count; i++) {
-            if (!this.constraintAlloc[i]) { this.constraintAlloc[i] = 1; indices.push(i); }
+            if (!this.constraintAlloc[i]) { 
+                this.constraintAlloc[i] = 1; 
+                indices.push(i); 
+                this.highestConstraintIdx = Math.max(this.highestConstraintIdx, i);
+            }
         }
         return indices;
     }
 
     releaseConstraints(indices: number[]) {
+        let needsRecalc = false;
         for (const idx of indices) {
+            if (idx === this.highestConstraintIdx) needsRecalc = true;
             this.removeConstraintColor(idx);
             this.constraintAlloc[idx] = 0;
             this.constraints.fill(-1, idx * 8, idx * 8 + 8);
             this.pushCommand(CMD.REM_CONSTRAINT, idx, [0,0,0,0], [0,0,0,0]);
+        }
+        if (needsRecalc) {
+            this.highestConstraintIdx = -1;
+            for (let i = MAX_CONSTRAINTS - 1; i >= 0; i--) {
+                if (this.constraintAlloc[i]) { this.highestConstraintIdx = i; break; }
+            }
         }
     }
 
@@ -435,8 +459,14 @@ export class WebPhysics {
             this.device.queue.writeBuffer(this.paramsBuffers[ph]!, 0, data);
         };
 
+        for (let ph = 0; ph <= this.maxColor; ph++) {
+            writeParams(ph);
+        }
+
+        const pDispatch = Math.max(1, Math.ceil((this.highestParticleIdx + 1) / 64));
+        const cDispatch = Math.max(1, Math.ceil((this.highestConstraintIdx + 1) / 64));
+
         const enc = this.device.createCommandEncoder();
-        writeParams(0);
 
         if (currentCommands > 0) {
             const pCmd = enc.beginComputePass();
@@ -445,47 +475,52 @@ export class WebPhysics {
         }
 
         const pGridClear = enc.beginComputePass();
-        pGridClear.setBindGroup(0, this.bindGroups[0]!); pGridClear.setPipeline(this.pipelines['clearGrid']!); pGridClear.dispatchWorkgroups(Math.ceil(4096 / 64));
+        pGridClear.setBindGroup(0, this.bindGroups[0]!); pGridClear.setPipeline(this.pipelines['clearGrid']!); pGridClear.dispatchWorkgroups(64);
         pGridClear.end();
 
         const pGridBuild = enc.beginComputePass();
-        pGridBuild.setBindGroup(0, this.bindGroups[0]!); pGridBuild.setPipeline(this.pipelines['buildGrid']!); pGridBuild.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64));
+        pGridBuild.setBindGroup(0, this.bindGroups[0]!); pGridBuild.setPipeline(this.pipelines['buildGrid']!); pGridBuild.dispatchWorkgroups(pDispatch);
         pGridBuild.end();
 
-        const pInt = enc.beginComputePass(); pInt.setBindGroup(0, this.bindGroups[0]!); pInt.setPipeline(this.pipelines['integrate']!); pInt.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); pInt.end();
+        const pInt = enc.beginComputePass(); pInt.setBindGroup(0, this.bindGroups[0]!); pInt.setPipeline(this.pipelines['integrate']!); pInt.dispatchWorkgroups(pDispatch); pInt.end();
 
         for (let s = 0; s < params.substeps; s++) {
-            for (let ph = 0; ph <= this.maxColor; ph++) {
-                writeParams(ph);
-                const pConstr = enc.beginComputePass(); 
-                pConstr.setBindGroup(0, this.bindGroups[ph]!); 
-                pConstr.setPipeline(this.pipelines['solveConstraints']!); 
-                pConstr.dispatchWorkgroups(Math.ceil(MAX_CONSTRAINTS / 64)); 
-                pConstr.end();
+            // 1. Constraint Solving Iterations
+            for (let i = 0; i < params.constraintIterations; i++) {
+                for (let ph = 0; ph <= this.maxColor; ph++) {
+                    const pConstr = enc.beginComputePass(); 
+                    pConstr.setBindGroup(0, this.bindGroups[ph]!); 
+                    pConstr.setPipeline(this.pipelines['solveConstraints']!); 
+                    pConstr.dispatchWorkgroups(cDispatch); 
+                    pConstr.end();
+                }
             }
             
-            const pColl = enc.beginComputePass(); 
-            pColl.setBindGroup(0, this.bindGroups[0]!); 
-            pColl.setPipeline(this.pipelines['solveCollisions']!); 
-            pColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
-            pColl.end();
+            // 2. Collision Solving Iterations
+            for (let i = 0; i < params.collisionIterations; i++) {
+                const pColl = enc.beginComputePass(); 
+                pColl.setBindGroup(0, this.bindGroups[0]!); 
+                pColl.setPipeline(this.pipelines['solveCollisions']!); 
+                pColl.dispatchWorkgroups(pDispatch); 
+                pColl.end();
 
-            const pPColl = enc.beginComputePass(); 
-            pPColl.setBindGroup(0, this.bindGroups[0]!); 
-            pPColl.setPipeline(this.pipelines['solveParticleCollisions']!); 
-            pPColl.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
-            pPColl.end();
+                const pPColl = enc.beginComputePass(); 
+                pPColl.setBindGroup(0, this.bindGroups[0]!); 
+                pPColl.setPipeline(this.pipelines['solveParticleCollisions']!); 
+                pPColl.dispatchWorkgroups(pDispatch); 
+                pPColl.end();
+            }
 
             const pFric = enc.beginComputePass(); 
             pFric.setBindGroup(0, this.bindGroups[0]!); 
             pFric.setPipeline(this.pipelines['applyFriction']!); 
-            pFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pFric.dispatchWorkgroups(pDispatch); 
             pFric.end();
 
             const pPFric = enc.beginComputePass(); 
             pPFric.setBindGroup(0, this.bindGroups[0]!); 
             pPFric.setPipeline(this.pipelines['applyParticleFriction']!); 
-            pPFric.dispatchWorkgroups(Math.ceil(MAX_PARTICLES / 64)); 
+            pPFric.dispatchWorkgroups(pDispatch); 
             pPFric.end();
         }
 

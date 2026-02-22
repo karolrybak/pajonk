@@ -469,7 +469,7 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         let delta = particles[u32(c.idxA)].pos - p1.pos;
         let dist = length(delta);
         if (dist < 0.0001) { return; }
-        if (cType == 4u && dist <= c.restValue) { return; }
+        if (cType == 4u && dist <= c.restValue) { return; } // Max Distance (Slack Rope)
         
         let dLambda = -(dist - c.restValue) / (wSum + alpha);
         let corr = delta * (dLambda / dist);
@@ -477,6 +477,7 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         if (w0 > 0.0) { particles[u32(c.idxA)].pos += corr * w0; }
         if (c.idxB >= 0 && w1 > 0.0) { particles[u32(c.idxB)].pos -= corr * w1; }
     } else if (cType == 1u) { // Angular
+        if (c.idxB < 0 || c.idxC < 0) { return; }
         let v0 = particles[u32(c.idxA)].pos - particles[u32(c.idxB)].pos;
         let v2 = particles[u32(c.idxC)].pos - particles[u32(c.idxB)].pos;
         let l0_sq = dot(v0, v0);
@@ -500,6 +501,7 @@ fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
         if (w1 > 0.0) { particles[u32(c.idxB)].pos += g1 * (lambda * w1); }
         if (w2 > 0.0) { particles[u32(c.idxC)].pos += g2 * (lambda * w2); }
     } else if (cType == 2u) { // Area
+        if (c.idxB < 0 || c.idxC < 0) { return; }
         let p0_pos = particles[u32(c.idxA)].pos;
         let p1_pos = particles[u32(c.idxB)].pos;
         let p2_pos = particles[u32(c.idxC)].pos;
