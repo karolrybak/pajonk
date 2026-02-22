@@ -59,6 +59,9 @@ watch(tool, (newTool) => {
     if (engine.value.tool === 'build_line' && newTool !== 'build_line') {
       engine.value.cancelRope();
     }
+    if (engine.value.tool === 'joint' && newTool !== 'joint') {
+      engine.value.cancelJoint();
+    }
     engine.value.tool = newTool;
   }
 });
@@ -92,62 +95,36 @@ const handleUpdate = () => {
 watch(() => props.initialLevelName, (newName) => {
   levelName.value = newName;
 });
+const open = ref(true);
 </script>
 
 <template>
-  <div class="h-screen flex flex-col bg-black text-white overflow-hidden">
-    <!-- Top Menu -->
-    <TopMenu 
-      v-model:level-name="levelName"
-      v-model:is-paused="isPaused"
-      :engine="engine"
-    />
+<UDashboardGroup>
+  <UDashboardSidebar id="default" v-model:open="open" collapsible resizable
+    :ui="{ footer: 'lg:border-t lg:border-default' }">
+    <template #header="{ collapsed }">
+      <TopMenu v-model:level-name="levelName" v-model:is-paused="isPaused"
+        :engine="engine" />
+    </template>
 
-    <div class="flex-1 relative">
-        <ObjectList 
-          class="absolute left-0 top-0 bottom-0 w-64 bg-gray-900/50 backdrop-blur-md overflow-y-auto z-10 border-r border-white/10"
-          :selected-entity="selectedEntity" 
-          @select="selectedEntity = $event" 
-        />
-        
-        <ObjectProperties 
-          v-if="selectedEntity"
-          class="absolute right-0 top-0 bottom-0 w-72 bg-gray-900/50 backdrop-blur-md overflow-y-auto z-10 border-l border-white/10"
-          :selected-entity="selectedEntity" 
-          @update="handleUpdate"
-          @delete="handleDelete"
-        />
+    <template #default="{ collapsed }">
+      <ObjectList      
+        :selected-entity="selectedEntity" @select="selectedEntity = $event" />
+    </template>
 
-      <!-- Main Canvas Area -->
-      <div class="absolute inset-0">
-        <div ref="canvasRef" class="w-full h-full" />
-        <span class="absolute top-4 left-4 text-xs font-mono opacity-50 pointer-events-none">FPS: <span>{{ fps }}</span></span>
-
-        <!-- Rope Status Overlay -->
-        <div v-if="ropeState">
-          <div>
-            <div />
-            <span>Mode: <span>{{ ropeState.mode }}</span></span>
-            <div />
-            <span>Segments: <span>{{ ropeState.segments }} / 100</span></span>
-          </div>
-        </div>
-
-        <!-- FPS Overlay (when not building rope) -->
-        <div 
-          v-else
-          class="absolute top-4 left-4 text-xs font-mono opacity-50 pointer-events-none"
-        >
-          {{ fps }} FPS
-        </div>
-
-        <div class="absolute bottom-6 left-1/2 -translate-x-1/2 z-20">
-          <Toolbar 
-            v-model:tool="tool" 
-            v-model:placement="placement" 
-          />
-        </div>
-      </div>
-    </div>
+    <template #footer="{ collapsed }">
+      <ObjectProperties v-if="selectedEntity"
+       
+        :selected-entity="selectedEntity" @update="handleUpdate" @delete="handleDelete" />
+    </template>
+  </UDashboardSidebar>
+  <div class="absolute bottom-8 left-1/2 -translate-x-1/2 border-black bg-white  border-1 rounded z-10">
+    <Toolbar v-model:tool="tool" v-model:placement="placement" />
   </div>
+
+  <div class="text-xs absolute right-5 top-1 z-10 text-white">
+    ROPE: {{ ropeState ? `${ropeState.mode} (${ropeState.segments})` : 'OFF' }} | FPS: {{ fps }}
+  </div>
+  <div ref="canvasRef" class="w-full h-full" />
+</UDashboardGroup>
 </template>

@@ -49,6 +49,7 @@ export type Entity = {
         index: number;
         color?: number;
         isSynced?: boolean;
+        isDirty?: boolean; // Explicit flag for value updates
     };
 
     physicsRope?: {

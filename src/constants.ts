@@ -19,3 +19,15 @@ export const MATERIAL_COLORS = {
     6: 0xffffff, // Rope
     7: 0x2a2a30  // World Border (Dark Gray-Blue)
 };
+
+/**
+ * Collision Layers (8 bits available: 0-7)
+ * Objects collide if (A.mask & B.mask) != 0
+ */
+export const COLLISION_LAYERS = {
+    DEFAULT: 0x01,      // Bit 0: Standard solid objects
+    PLAYER:  0x02,      // Bit 1: The spider body/legs
+    ENVIRONMENT: 0x04,  // Bit 2: Walls and floors
+    // ... bits 3-6 free
+    SPIDER_SILK: 0x80   // Bit 7: Reserved for your spider webbing
+};

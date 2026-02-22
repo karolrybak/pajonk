@@ -18,7 +18,7 @@ struct Constraint {
     idxA: i32,
     idxB: i32,
     idxC: i32,
-    cType: u32,
+    cType_color: u32,
     restValue: f32,
     compliance: f32,
     extra: vec2<f32>,
@@ -84,7 +84,8 @@ fn vs(@builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceId
 @vertex
 fn vs_lines(@builtin(vertex_index) vertexIdx: u32, @builtin(instance_index) instanceIdx: u32) -> @builtin(position) vec4<f32> {
     let c = constraints[instanceIdx];
-    if (c.idxA < 0) { return vec4<f32>(-100.0, -100.0, -100.0, 1.0); }
+    let cType = c.cType_color & 0xFFFFu;
+    if (c.idxA < 0 || cType == 1u || cType == 2u) { return vec4<f32>(-100.0, -100.0, -100.0, 1.0); }
     
     let pA = particles[u32(c.idxA)].pos;
     var pB: vec2<f32>;

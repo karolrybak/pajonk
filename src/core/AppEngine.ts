@@ -150,9 +150,10 @@ export class AppEngine {
             }
 
             if (c.index !== undefined && c.index !== -1) {
-                if (!c.isSynced) {
+                if (!c.isSynced || c.isDirty) {
                     const aIdx = c.targetA.physicsParticle?.index;
                     let bIdx = -1;
+                    let cIdx = -1;
                     let anchor = new Float32Array([0, 0]);
                     
                     if (c.targetB instanceof Float32Array) {
@@ -166,10 +167,15 @@ export class AppEngine {
                         }
                     }
 
+                    if (c.targetC?.physicsParticle) {
+                        cIdx = c.targetC.physicsParticle.index;
+                    }
+
                     if (aIdx !== undefined && (c.targetB instanceof Float32Array || bIdx !== -1 || (c.targetB as Entity).transform)) {
-                        c.color = this.physics.assignColor(aIdx, bIdx);
-                        this.physics.setConstraint(c.index, aIdx, bIdx, c.color!, c.type, c.restValue, c.compliance, anchor);
+                        c.color = this.physics.assignColor(aIdx, bIdx, cIdx);
+                        this.physics.setConstraint(c.index, aIdx, bIdx, cIdx, c.color!, c.type, c.restValue, c.compliance, anchor);
                         c.isSynced = true;
+                        c.isDirty = false;
                     }
                 }
             }

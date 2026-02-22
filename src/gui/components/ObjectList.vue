@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { world, type Entity } from '@/ecs';
-import { onMounted, onUnmounted, ref } from 'vue';
+import { onMounted, onUnmounted, ref, computed } from 'vue';
 
 const props = defineProps<{
   selectedEntity: Entity | null;
@@ -26,26 +26,33 @@ onMounted(() => {
 onUnmounted(() => {
   clearInterval(interval);
 });
+
+const iconFor = (ent: Entity) => {
+  if (ent.physicsRope) return 'i-heroicons-link';
+  if (ent.physicsConstraint) return 'i-heroicons-paper-clip';
+  if (ent.staticBody) return 'i-heroicons-stop';
+  if (ent.physicsBody) return 'i-heroicons-sparkles';
+  return 'i-heroicons-cube';
+};
+
+const treeItems = computed(() =>
+  entities.value.map((ent, i) => ({
+    label: ent.name || 'Unnamed Entity',
+    icon: iconFor(ent),
+    value: String(i),
+    _entity: ent,
+    onSelect: () => emit('select', ent)
+  }))
+);
+
+const onSelect = (item: any) => {
+  emit('select', item._entity ?? null);
+};
 </script>
 
 <template>
-  <div>
-    <div>
-      Scene Hierarchy
-    </div>
-    
-    <div>
-      <div v-if="entities.length === 0">
-        No entities in scene
-      </div>
-      
-      <div
-        v-for="entity in entities"
-        :key="entities.indexOf(entity)"
-        @click="emit('select', entity)"
-      >
-        {{ entity.name || 'Unnamed Entity' }}
-      </div>
-    </div>
-  </div>
+  <UTree
+    :items="treeItems"
+    @select="onSelect"
+  />
 </template>

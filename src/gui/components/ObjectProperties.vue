@@ -96,6 +96,31 @@ const rotationDeg = computed({
         </UFormGroup>
       </div>
 
+      <!-- Constraint -->
+      <div v-if="selectedEntity.physicsConstraint">
+        <div>Constraint</div>
+        
+        <UFormGroup label="Rest Value" size="xs">
+          <UInput 
+            type="number" 
+            step="0.01" 
+            v-model.number="selectedEntity.physicsConstraint.restValue" 
+            @update:model-value="selectedEntity.physicsConstraint.isDirty = true"
+            size="xs"
+          />
+        </UFormGroup>
+
+        <UFormGroup label="Compliance" size="xs">
+          <UInput 
+            type="number" 
+            step="0.0001" 
+            v-model.number="selectedEntity.physicsConstraint.compliance" 
+            @update:model-value="selectedEntity.physicsConstraint.isDirty = true"
+            size="xs"
+          />
+        </UFormGroup>
+      </div>
+
       <!-- Physics -->
       <div v-if="body">
         <div>Physics</div>

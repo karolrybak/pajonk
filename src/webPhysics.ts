@@ -10,7 +10,8 @@ const CMD = {
     SET_CONSTRAINT: 3,
     REM_PARTICLE: 4,
     REM_CONSTRAINT: 5,
-    SET_OBSTACLE: 6
+    SET_OBSTACLE: 6,
+    APPLY_IMPULSE: 7
 };
 
 export interface SimulationParams {
@@ -166,14 +167,15 @@ export class WebPhysics {
         this.numCommands++;
     }
 
-    assignColor(a: number, b: number): number {
-        if (b < 0) return 0;
+    assignColor(a: number, b: number, c: number = -1): number {
+        if (b < 0 && c < 0) return 0;
         let color = 0;
         const setA = this.particleColors[a];
         const setB = this.particleColors[b];
-        while ((setA && setA.has(color)) || (setB && setB.has(color))) color++;
+        const setC = this.particleColors[c];
+        while ((setA && setA.has(color)) || (setB && setB.has(color)) || (setC && setC.has(color))) color++;
         if (color >= 16) color = 15;
-        setA?.add(color); setB?.add(color);
+        setA?.add(color); setB?.add(color); setC?.add(color);
         this.colorCounts[color]++;
         while (this.maxColor < 15 && this.colorCounts[this.maxColor + 1] > 0) this.maxColor++;
         return color;
@@ -183,10 +185,12 @@ export class WebPhysics {
         const off = idx * 8;
         const a = this.constraints[off]!;
         const b = this.constraints[off + 1]!;
-        const color = this.constraints[off + 2]!;
+        const c = this.constraints[off + 2]!;
+        const color = (this.constraints[off + 3]! >>> 16) & 0xFFFF;
         if (a < 0) return;
         this.particleColors[a]?.delete(color);
         if (b >= 0) this.particleColors[b]?.delete(color);
+        if (c >= 0) this.particleColors[c]?.delete(color);
         this.colorCounts[color]--;
         while (this.maxColor > 0 && this.colorCounts[this.maxColor] === 0) this.maxColor--;
     }
@@ -231,18 +235,18 @@ export class WebPhysics {
         }
     }
 
-    setConstraint(idx: number, a: number, b: number, color: number, cType: number, restValue: number, comp: number, anchor: Float32Array) {
+    setConstraint(idx: number, a: number, b: number, c: number, color: number, cType: number, restValue: number, comp: number, anchor: Float32Array) {
         const off = idx * 8;
         const f32 = new Float32Array(this.constraints.buffer);
         this.constraints[off] = a;
         this.constraints[off + 1] = b;
-        this.constraints[off + 2] = color;
-        this.constraints[off + 3] = cType;
+        this.constraints[off + 2] = c;
+        this.constraints[off + 3] = (color << 16) | cType;
         f32[off + 4] = restValue;
         f32[off + 5] = comp;
         f32[off + 6] = anchor[0]!;
         f32[off + 7] = anchor[1]!;
-        this.pushCommand(CMD.SET_CONSTRAINT, idx, [a, b, color, cType], [restValue, comp, anchor[0]!, anchor[1]!], false, false);
+        this.pushCommand(CMD.SET_CONSTRAINT, idx, [a, b, c, (color << 16) | cType], [restValue, comp, anchor[0]!, anchor[1]!], true, false);
     }
 
     setParticle(idx: number, pos: Float32Array, prevPos: Float32Array, mass: number, friction: number, radius: number, mask: number, appearance: number = 0, flags: number = 0) {
@@ -263,11 +267,16 @@ export class WebPhysics {
         this.pushCommand(CMD.MOVE_PARTICLE, idx, [pos[0]!, pos[1]!, pos[0]!, pos[1]!], [0,0,0,0]);
     }
 
-    setObstacle(idx: number, pos: Float32Array, rotation: number, shapeType: number, params: Float32Array, friction: number, appearance: number = 0, flags: number = 0) {
+    applyImpulse(idx: number, vx: number, vy: number) {
+        this.pushCommand(CMD.APPLY_IMPULSE, idx, [vx, vy, 0, 0], [0, 0, 0, 0]);
+    }
+
+    setObstacle(idx: number, pos: Float32Array, rotation: number, shapeType: number, params: Float32Array, friction: number, appearance: number = 0, flags: number = 0, mask: number = 0xFF) {
         const off = idx * 8;
         const u32 = new Uint32Array(this.obstacles.buffer);
         const f8 = Math.max(0, Math.min(255, Math.floor(friction * 255)));
-        const meta = (shapeType & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16) | (f8 << 24);
+        // Obstacle meta: [0-7] Type, [8-15] Appearance, [16-23] Flags, [24-31] Mask
+        const meta = (shapeType & 0xFF) | ((appearance & 0xFF) << 8) | ((flags & 0xFF) << 16) | ((mask & 0xFF) << 24);
         this.obstacles[off] = pos[0]!; this.obstacles[off+1] = pos[1]!; this.obstacles[off+2] = rotation; u32[off+3] = meta;
         this.obstacles[off+4] = params[0]!; this.obstacles[off+5] = params[1]!; this.obstacles[off+6] = params[2]!; this.obstacles[off+7] = params[3]!;
         this.pushCommand(CMD.SET_OBSTACLE, idx, [pos[0]!, pos[1]!, rotation, meta], [params[0]!, params[1]!, params[2]!, params[3]!], true, false);

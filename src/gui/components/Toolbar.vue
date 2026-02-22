@@ -30,11 +30,20 @@ const items = [
     ]
   },
   { label: 'Rope', icon: 'i-heroicons-link', click: () => setTool('build_line') },
+  { 
+    label: 'Joint', icon: 'i-heroicons-paper-clip', children: [
+      { label: 'Anchor', icon: 'i-heroicons-map-pin', onSelect: () => setTool('joint', { type: 'joint', subtype: 'anchor' }) },
+      { label: 'Distance', icon: 'i-heroicons-arrows-right-left', onSelect: () => setTool('joint', { type: 'joint', subtype: 'distance' }) },
+      { label: 'Inequality', icon: 'i-heroicons-arrows-pointing-out', onSelect: () => setTool('joint', { type: 'joint', subtype: 'inequality' }) },
+      { label: 'Angular', icon: 'i-heroicons-arrow-path', onSelect: () => setTool('joint', { type: 'joint', subtype: 'angular' }) },
+      { label: 'Area', icon: 'i-heroicons-stop-circle', onSelect: () => setTool('joint', { type: 'joint', subtype: 'area' }) },
+    ]
+  },
 ];
 </script>
 
 <template>
-  <div class="flex items-center gap-1 p-1 bg-black/80 backdrop-blur-md rounded-lg border border-white/10 shadow-2xl">
+  <div class="flex items-center gap-1 p-1 backdrop-blur-md rounded-lg border border-white/10 shadow-2xl">
     <template v-for="item in items">
       <UDropdownMenu v-if="item.children" :items="[item.children]">
         <UButton 

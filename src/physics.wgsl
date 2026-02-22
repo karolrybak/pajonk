@@ -15,8 +15,8 @@ struct Particle {
 struct Constraint {
     idxA: i32,
     idxB: i32,
-    color: i32,    // Graph coloring for parallel solving
-    cType: u32,    // 0: Distance, 1: Bending, 3: Anchor
+    idxC: i32,        // Used for Angular (hinge) and Area constraints
+    cType_color: u32, // Bitpacked: [0-15] cType, [16-31] color
     restValue: f32,
     compliance: f32,
     extra: vec2<f32>, // Usually world anchor position
@@ -45,7 +45,7 @@ struct Params {
 };
 
 struct Command {
-    cmdType: u32,   // 1: Add, 2: Move, 3: Constraint, 4: RemParticle, 5: RemConstraint, 6: SetObstacle
+    cmdType: u32,   // 1: Add, 2: Move, 3: Constraint, 4: RemParticle, 5: RemConstraint, 6: SetObstacle, 7: Impulse
     index: u32,     // Buffer index to modify
     pad0: u32,
     pad1: u32,
@@ -68,7 +68,7 @@ struct Query {
 
 struct QueryResult {
     count: u32,
-    hitType: u32,   // 1: Particle, 2: Obstacle, 4: Ping
+    hitType: u32,   // 1: Particle, 2: Obstacle, 3: Constraint, 4: Ping
     hitIdx: i32,
     distance: f32,
     hitPos: vec2<f32>,
@@ -130,6 +130,34 @@ fn getSDFInfo(p: vec2<f32>, obs: Obstacle) -> vec3<f32> {
     return vec3<f32>(info.x, worldN.x, worldN.y);
 }
 
+// Returns distance t along ray to a capsule (segment + radius)
+fn intersectRayCapsule(ro: vec2<f32>, rd: vec2<f32>, pa: vec2<f32>, pb: vec2<f32>, r: f32) -> f32 {
+    let ba = pb - pa;
+    let oa = ro - pa;
+    let baba = dot(ba, ba);
+    let bard = dot(ba, rd);
+    let baoa = dot(ba, oa);
+    let rdoa = dot(rd, oa);
+    let oaoa = dot(oa, oa);
+    
+    var a = baba - bard * bard;
+    var b = baba * rdoa - baoa * bard;
+    var c = baba * oaoa - baoa * baoa - r * r * baba;
+    var h = b * b - a * c;
+    if (h >= 0.0) {
+        var t = (-b - sqrt(h)) / a;
+        let y = baoa + t * bard;
+        if (y > 0.0 && y < baba) { return t; }
+        
+        let oc = select(ro - pb, oa, y <= 0.0);
+        let b2 = dot(rd, oc);
+        let c2 = dot(oc, oc) - r * r;
+        let h2 = b2 * b2 - c2;
+        if (h2 > 0.0) { return -b2 - sqrt(h2); }
+    }
+    return 1e10;
+}
+
 fn getInvMass(i: u32) -> f32 {
     let p = particles[i];
     let flags = (p.object_data >> 16u) & 0xFFu;
@@ -180,8 +208,8 @@ fn processCommands(@builtin(global_invocation_id) id: vec3<u32>) {
     } else if (cmd.cmdType == 3u) { // Create/Update Constraint
         constraints[cmd.index].idxA = i32(cmd.d0.x);
         constraints[cmd.index].idxB = i32(cmd.d0.y);
-        constraints[cmd.index].color = i32(cmd.d0.z);
-        constraints[cmd.index].cType = u32(cmd.d0.w);
+        constraints[cmd.index].idxC = i32(cmd.d0.z);
+        constraints[cmd.index].cType_color = bitcast<u32>(cmd.d0.w);
         constraints[cmd.index].restValue = cmd.d1.x;
         constraints[cmd.index].compliance = cmd.d1.y;
         constraints[cmd.index].extra = cmd.d1.zw;
@@ -196,6 +224,8 @@ fn processCommands(@builtin(global_invocation_id) id: vec3<u32>) {
         obstacles[cmd.index].rotation = cmd.d0.z;
         obstacles[cmd.index].object_data = bitcast<u32>(cmd.d0.w);
         obstacles[cmd.index].params = cmd.d1;
+    } else if (cmd.cmdType == 7u) { // Apply Impulse (modifies velocity)
+        particles[cmd.index].prevPos -= cmd.d0.xy;
     }
 }
 
@@ -349,6 +379,29 @@ fn processQueries(@builtin(global_invocation_id) id: vec3<u32>) {
             tObs += max(d, 0.01);
         }
         
+        // Ray-Constraint traversal
+        for (var j = 0u; j < arrayLength(&constraints); j++) {
+            let c = constraints[j];
+            let cType = c.cType_color & 0xFFFFu;
+            if (c.idxA < 0 || (cType != 0u && cType != 3u)) { continue; }
+            
+            let pA = particles[u32(c.idxA)].pos;
+            var pB: vec2<f32>;
+            if (cType == 3u) { pB = c.extra; } else { pB = particles[u32(c.idxB)].pos; }
+            
+            let t = intersectRayCapsule(q.origin, q.dir_or_radius, pA, pB, 0.1);
+            if (t > 0.0 && t < bestT) {
+                bestT = t;
+                bestHitType = 3u;
+                bestHitIdx = i32(j);
+                // Approximate normal (towards ray origin from line)
+                let p = q.origin + q.dir_or_radius * t;
+                let pa = p - pA; let ba = pB - pA;
+                let h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+                bestHitNorm = normalize(p - (pA + ba * h));
+            }
+        }
+
         if (bestHitType != 0u) {
             res.hitType = bestHitType;
             res.hitIdx = bestHitIdx;
@@ -383,32 +436,89 @@ fn integrate(@builtin(global_invocation_id) id: vec3<u32>) {
 fn solveConstraints(@builtin(global_invocation_id) id: vec3<u32>) {
     let i = id.x; if (i >= arrayLength(&constraints)) { return; }
     let c = constraints[i]; 
-    // Skip if invalid or if it's not the current solve phase (coloring)
-    if (c.idxA < 0 || u32(c.color) != params.phase) { return; }
     
-    let w1 = getInvMass(u32(c.idxA));
-    var w2 = 0.0;
-    var pB: vec2<f32>;
+    let cColor = c.cType_color >> 16u;
+    let cType = c.cType_color & 0xFFFFu;
     
-    if (c.idxB >= 0) {
-        w2 = getInvMass(u32(c.idxB));
-        pB = particles[u32(c.idxB)].pos;
-    } else {
-        pB = c.extra; // World space anchor
+    if (c.idxA < 0 || cColor != params.phase) { return; }
+    
+    let w0 = getInvMass(u32(c.idxA));
+    var w1 = 0.0;
+    var p1 = particles[u32(c.idxA)];
+    
+    if (cType == 3u) { // Anchor
+        p1.pos = c.extra;
+    } else if (c.idxB >= 0) {
+        p1 = particles[u32(c.idxB)];
+        w1 = getInvMass(u32(c.idxB));
     }
     
-    let wSum = w1 + w2; if (wSum <= 0.0) { return; }
-    let delta = particles[u32(c.idxA)].pos - pB;
-    let dist = length(delta); if (dist < 0.0001) { return; }
-    
-    // PBD Constraint Solver with Compliance
+    var p2 = particles[u32(c.idxA)];
+    var w2 = 0.0;
+    if (c.idxC >= 0) {
+        p2 = particles[u32(c.idxC)];
+        w2 = getInvMass(u32(c.idxC));
+    }
+
     let h = params.dt / f32(params.substeps);
     let alpha = c.compliance / (h * h);
-    let dLambda = -(dist - c.restValue) / (wSum + alpha);
-    let corr = delta * (dLambda / dist);
-    
-    if (w1 > 0.0) { particles[u32(c.idxA)].pos += corr * w1; }
-    if (c.idxB >= 0 && w2 > 0.0) { particles[u32(c.idxB)].pos -= corr * w2; }
+
+    if (cType == 0u || cType == 3u || cType == 4u) { // Distance, Anchor, or Inequality
+        let wSum = w0 + w1;
+        if (wSum <= 0.0) { return; }
+        let delta = particles[u32(c.idxA)].pos - p1.pos;
+        let dist = length(delta);
+        if (dist < 0.0001) { return; }
+        if (cType == 4u && dist <= c.restValue) { return; }
+        
+        let dLambda = -(dist - c.restValue) / (wSum + alpha);
+        let corr = delta * (dLambda / dist);
+        
+        if (w0 > 0.0) { particles[u32(c.idxA)].pos += corr * w0; }
+        if (c.idxB >= 0 && w1 > 0.0) { particles[u32(c.idxB)].pos -= corr * w1; }
+    } else if (cType == 1u) { // Angular
+        let v0 = particles[u32(c.idxA)].pos - particles[u32(c.idxB)].pos;
+        let v2 = particles[u32(c.idxC)].pos - particles[u32(c.idxB)].pos;
+        let l0_sq = dot(v0, v0);
+        let l2_sq = dot(v2, v2);
+        if (l0_sq < 0.0001 || l2_sq < 0.0001) { return; }
+        
+        let current_angle = atan2(v0.x * v2.y - v0.y * v2.x, dot(v0, v2));
+        var err = current_angle - c.restValue;
+        while(err > 3.14159265) { err -= 6.2831853; }
+        while(err < -3.14159265) { err += 6.2831853; }
+        
+        let g0 = vec2<f32>(-v0.y / l0_sq, v0.x / l0_sq);
+        let g2 = vec2<f32>(v2.y / l2_sq, -v2.x / l2_sq);
+        let g1 = -(g0 + g2);
+        
+        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
+        if (sum_w_grad2 < 0.00001) { return; }
+        
+        let lambda = -err / (sum_w_grad2 + alpha);
+        if (w0 > 0.0) { particles[u32(c.idxA)].pos += g0 * (lambda * w0); }
+        if (w1 > 0.0) { particles[u32(c.idxB)].pos += g1 * (lambda * w1); }
+        if (w2 > 0.0) { particles[u32(c.idxC)].pos += g2 * (lambda * w2); }
+    } else if (cType == 2u) { // Area
+        let p0_pos = particles[u32(c.idxA)].pos;
+        let p1_pos = particles[u32(c.idxB)].pos;
+        let p2_pos = particles[u32(c.idxC)].pos;
+        
+        let g0 = vec2<f32>(p1_pos.y - p2_pos.y, p2_pos.x - p1_pos.x) * 0.5;
+        let g1 = vec2<f32>(p2_pos.y - p0_pos.y, p0_pos.x - p2_pos.x) * 0.5;
+        let g2 = vec2<f32>(p0_pos.y - p1_pos.y, p1_pos.x - p0_pos.x) * 0.5;
+        
+        let current_area = 0.5 * ((p1_pos.x - p0_pos.x) * (p2_pos.y - p0_pos.y) - (p1_pos.y - p0_pos.y) * (p2_pos.x - p0_pos.x));
+        let err = current_area - c.restValue;
+        
+        let sum_w_grad2 = w0 * dot(g0, g0) + w1 * dot(g1, g1) + w2 * dot(g2, g2);
+        if (sum_w_grad2 < 0.00001) { return; }
+        
+        let lambda = -err / (sum_w_grad2 + alpha);
+        if (w0 > 0.0) { particles[u32(c.idxA)].pos += g0 * (lambda * w0); }
+        if (w1 > 0.0) { particles[u32(c.idxB)].pos += g1 * (lambda * w1); }
+        if (w2 > 0.0) { particles[u32(c.idxC)].pos += g2 * (lambda * w2); }
+    }
 }
 
 @compute @workgroup_size(64)
@@ -417,8 +527,13 @@ fn solveCollisions(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = particles[i]; let w = getInvMass(i);
     if (w <= 0.0) { return; }
 
+    let pMask = p.object_data & 0xFFu;
     for (var j: u32 = 0u; j < params.numObstacles; j++) {
         let obs = obstacles[j];
+        // Obstacles now also support the 8-bit collision mask (stored in bits 24-31 of object_data for obstacles)
+        let obsMask = (obs.object_data >> 24u) & 0xFFu;
+        if (obsMask != 0u && (pMask & obsMask) == 0u) { continue; }
+
         let info = getSDFInfo(p.pos, obs);
         if (info.x < p.radius) {
             let n = info.yz;

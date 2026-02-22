@@ -50,7 +50,7 @@ onMounted(loadLevels);
 </script>
 
 <template>
-  <div class="p-2 border-b border-white/10 flex items-center gap-2 bg-black/80 backdrop-blur-md z-50">
+  <div>
     <UDropdownMenu :items="[[
       { label: 'New', icon: 'i-heroicons-document-plus', onSelect: () => { engine?.clearScene(); emit('update:levelName', ''); } },
       { label: 'Save', icon: 'i-heroicons-document-check', onSelect: handleSave },
@@ -59,7 +59,7 @@ onMounted(loadLevels);
       <UButton color="neutral" variant="ghost" icon="i-heroicons-bars-3" :label="levelName || 'New Level'" />
     </UDropdownMenu>
 
-    <div class="h-4 w-px bg-white/10 mx-2" />
+    
 
     <UButton 
       :icon="isPaused ? 'i-heroicons-play' : 'i-heroicons-stop'" 
@@ -67,16 +67,15 @@ onMounted(loadLevels);
       variant="ghost"
       @click="emit('update:isPaused', !isPaused)"
     >
-      {{ isPaused ? 'Start' : 'Stop' }}
     </UButton>
-      <UButton icon="i-heroicons-beaker" color="gray" variant="ghost" @click="runBenchmark" label="Bench" />
+      <UButton icon="i-heroicons-beaker" color="gray" variant="ghost" @click="runBenchmark"/>
     <UButton 
       icon="i-heroicons-rocket-launch" 
       variant="ghost" 
       color="neutral"
       @click="handleSave().then(() => levelName && window.open(`/play/${levelName}`, '_blank'))"
     >
-      Test
+     
     </UButton>
   </div>
 </template>
