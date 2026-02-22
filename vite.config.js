@@ -9,7 +9,7 @@ import ui from '@nuxt/ui/vite'
 import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   server: {
     port: 3000,
     open: true,
