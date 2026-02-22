@@ -16,6 +16,7 @@ export const addObject = (physics: WebPhysics, type: 'static' | 'dynamic', shape
     };
 
     if (isStatic) {
+        if(!ent.sdfCollider) throw new Error('sdfCollider is undefined');
         ent.staticBody = { friction: 0.5, appearance: appearance ?? 1, flags: 0 };
         ent.editor_ui = { visible: true };
         const idx = physics.numObstacles++;

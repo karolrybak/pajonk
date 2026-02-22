@@ -193,7 +193,8 @@ fn applyParticleFriction(@builtin(global_invocation_id) id: vec3<u32>) {
             let n = delta / dist; let velJ = pj.pos - pj.prevPos;
             let relVel = newVel - velJ; let vn = dot(relVel, n); let vt = relVel - n * vn;
             if (length(vt) > 0.0001) {
-                newVel = (n * vn + vt * max(0.0, 1.0 - (pi.friction + pj.friction) * 0.5)) + velJ;
+                let frictionFactor = clamp(1.0 - (pi.friction + pj.friction), 0.0, 1.0);
+                newVel = (n * vn + vt * max(0.0, frictionFactor * 0.5)) + velJ;
             }
         }
     }

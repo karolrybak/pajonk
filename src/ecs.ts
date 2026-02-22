@@ -1,7 +1,6 @@
 import { World } from 'miniplex';
 
 export type Entity = {
-    id: string;
     name: string;
     tags: string[];
 

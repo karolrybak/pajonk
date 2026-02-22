@@ -10,7 +10,6 @@ import { RopeSystem } from './RopeSystem';
 export class EditorEngine extends AppEngine {
     tool: ToolMode = 'select';
     placement: PlacementState = null;
-    selectedEntityId: string | null = null;
     draggedEntity: Entity | null = null;
     dragOffset = new Float32Array([0, 0]);
     
@@ -108,12 +107,12 @@ export class EditorEngine extends AppEngine {
         if (this.tool === 'select' && e.button === 0) {
             const ent = world.entities.find(e => e.transform && vec2.distance(e.transform.position, pos) < 0.6);
             if (ent) {
-                this.selectedEntityId = ent.id;
+                this.selectedEntity = ent;
                 this.draggedEntity = ent;
                 vec2.sub(ent.transform!.position, pos, this.dragOffset);
                 this.onSelectEntity?.(ent);
             } else {
-                this.selectedEntityId = null; 
+                this.selectedEntity = null; 
                 this.onSelectEntity?.(null);
             }
         } else if (this.tool === 'create_obj' && this.placement) {

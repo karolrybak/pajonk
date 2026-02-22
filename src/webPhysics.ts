@@ -1,7 +1,7 @@
-export const MAX_PARTICLES = 2048;
-export const MAX_CONSTRAINTS = 16384;
+export const MAX_PARTICLES = 8192;
+export const MAX_CONSTRAINTS = 8192;
 export const MAX_OBSTACLES = 1024;
-export const MAX_EVENTS = 4096;
+export const MAX_EVENTS = 1024;
 
 export interface SimulationParams {
     dt: number;

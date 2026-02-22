@@ -17,17 +17,17 @@ export const ObjectList: React.FC<ObjectListProps> = ({ selectedEntity, setSelec
     <div style={{ flex: selectedEntity ? '0 0 250px' : '1', padding: 10, overflowY: 'auto', borderBottom: selectedEntity ? '1px solid #333' : 'none' }}>
         <div style={{ fontSize: 10, marginBottom: 10, color: '#555', letterSpacing: '1px' }}>SCENE HIERARCHY</div>
         {filteredEntities.map(e => (
-            <div key={e.id} onClick={() => setSelectedEntity(e)} style={{ 
+            <div key={e} onClick={() => setSelectedEntity(e)} style={{ 
                 padding: '6px 8px', 
                 fontSize: 11, 
-                borderLeft: selectedEntity?.id === e.id ? '2px solid #4a90e2' : '2px solid transparent', 
-                background: selectedEntity?.id === e.id ? '#1a1a1a' : 'transparent', 
+                borderLeft: selectedEntity === e ? '2px solid #4a90e2' : '2px solid transparent', 
+                background: selectedEntity === e ? '#1a1a1a' : 'transparent', 
                 cursor: 'pointer', 
                 marginBottom: 2, 
                 whiteSpace: 'nowrap', 
                 overflow: 'hidden', 
                 textOverflow: 'ellipsis', 
-                color: selectedEntity?.id === e.id ? '#fff' : '#aaa' 
+                color: selectedEntity === e ? '#fff' : '#aaa' 
             }}>
                 {e.name}
             </div>

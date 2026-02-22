@@ -16,6 +16,7 @@ export class AppEngine {
     lastTime = performance.now();
     accumulator = 0;
     onFpsUpdate?: (fps: number) => void;
+    selectedEntity: Entity | null = null;
 
     private fpsTimer = 0;
     private fpsFrameCount = 0;
@@ -103,7 +104,7 @@ export class AppEngine {
             
             if (ent.physicsParticle) {
                 const b = ent.physicsBody!;
-                const isSelected = (this as any).selectedEntityId === ent.id;
+                const isSelected = this.selectedEntity === ent;
                 const isBuilding = ent.tags?.includes('building') || buildingSegments.has(ent);
                 let nextFlags = b.flags;
                 if (isSelected) nextFlags |= 1; else nextFlags &= ~1;
