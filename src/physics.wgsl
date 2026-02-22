@@ -109,7 +109,7 @@ fn sdBoxInfo(p: vec2<f32>, b: vec2<f32>) -> vec3<f32> {
 
 fn sdRoundedBoxInfo(p: vec2<f32>, b: vec2<f32>, r: f32) -> vec3<f32> {
     let q = abs(p) - b + r;
-    let dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;
+    let dist = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
     var n: vec2<f32>;
     if (q.x > 0.0 || q.y > 0.0) {
         n = normalize(max(q, vec2<f32>(0.0))) * vec2<f32>(sign(p.x), sign(p.y));
